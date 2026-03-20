@@ -23,11 +23,11 @@ nix_store_dep = dependency('nix-store', method: 'pkg-config')
 nix_main_dep = dependency('nix-main', method: 'pkg-config')
 
 sources = files(
-    'main.cpp',
-    'settings.cpp',
-    'slurm.cpp',
-    'pbs.cpp',
-    'slurm-native.cpp',
+    'main.cc',
+    'settings.cc',
+    'slurm.cc',
+    'pbs.cc',
+    'slurm-native.cc',
 )
 
 executable('nsh', sources, dependencies : [

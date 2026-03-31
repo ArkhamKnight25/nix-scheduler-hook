@@ -2,7 +2,8 @@
   description = "A build hook for Nix that dispatches builds through a job scheduler.";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs";
+    # TODO: revert to master once staging is next merged
+    nixpkgs.url = "github:nixos/nixpkgs/staging";
     restclient-cpp = {
       url = "github:mrtazz/restclient-cpp";
       flake = false;
@@ -17,7 +18,19 @@
           "x86_64-darwin"
           "aarch64-linux"
           "aarch64-darwin"
-        ] (system: function (nixpkgs.legacyPackages.${system}) system);
+        ] (system:
+          let
+            pkgs = import nixpkgs {
+              inherit system;
+              overlays = [
+                (final: prev: {
+                  openpbs = prev.openpbs.overrideAttrs (old: {
+                    hardeningDisable = [ "all" ];
+                  });
+                })
+              ];
+            };
+          in function pkgs system);
     in {
       checks = eachDefaultSystem (pkgs: system:
         import ./tests.nix {
@@ -29,6 +42,7 @@
         default = nix-scheduler-hook;
         nix-scheduler-hook = pkgs.callPackage ./default.nix {
           restclient-cpp = inputs.restclient-cpp;
+          nix = pkgs.nixVersions.nix_2_34;
         };
       });
     };

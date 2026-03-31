@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 
 #include <nix/util/configuration.hh>
@@ -9,8 +10,8 @@ struct Settings : public nix::Config
 {
     Settings();
 
-    nix::Path confDir;
-    std::vector<nix::Path> userConfFiles;
+    std::filesystem::path confDir;
+    std::vector<std::filesystem::path> userConfFiles;
 
     nix::Setting <std::string> jobScheduler {
         this,
@@ -127,6 +128,6 @@ struct Settings : public nix::Config
 
 void loadConfFile(nix::AbstractConfig & config);
 
-std::vector<nix::Path> getUserConfigFiles();
+std::vector<std::filesystem::path> getUserConfigFiles();
 
 extern Settings ourSettings;

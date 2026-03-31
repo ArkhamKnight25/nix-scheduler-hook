@@ -14,11 +14,12 @@ bool handleOutput(std::ostream & logOs, std::string_view data)
     static size_t currentLogLinePos = 0;
     static std::string currentLogLine;
     logSize += data.size();
-    if (settings.maxLogSize && logSize > settings.maxLogSize) {
+    auto maxLogSize = settings.getWorkerSettings().maxLogSize;
+    if (maxLogSize && logSize > maxLogSize) {
         throw BuildError(
-            BuildResult::LogLimitExceeded,
+            BuildResult::Failure::LogLimitExceeded,
             "wrote more than %d bytes of log output",
-            settings.maxLogSize);
+            maxLogSize);
     }
 
     for (auto c : data)

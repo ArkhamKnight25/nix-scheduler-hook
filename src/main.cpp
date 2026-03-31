@@ -24,6 +24,7 @@ using namespace std::chrono_literals;
 #include <nix/util/error.hh>
 #include <nix/util/util.hh>
 #include <nix/util/hash.hh>
+#include <nix/util/signals.hh>
 #include <nix/util/signals-impl.hh>
 #include <nix/util/processes.hh>
 #include <nix/util/environment-variables.hh>
@@ -37,7 +38,7 @@ using namespace std::chrono_literals;
 
 static void handleAlarm(int sig) {}
 
-static std::string currentLoad;
+static std::filesystem::path currentLoad;
 
 static std::string escapeUri(std::string uri)
 {
@@ -122,7 +123,7 @@ struct FallbackHookInstance
         sink << "try" << amWilling << neededSystem << drvPath << requiredFeatures;
         sink.flush();
 
-        auto inputs = nix::readStrings<nix::PathSet>(source);
+        auto inputs = nix::readStrings<nix::StringSet>(source);
         auto wantedOutputs = nix::readStrings<nix::StringSet>(source);
 
         sink << inputs << wantedOutputs;
@@ -192,11 +193,10 @@ try {
 
     /* It would be more appropriate to use $XDG_RUNTIME_DIR, since
         that gets cleared on reboot, but it wouldn't work on macOS. */
-    auto currentLoadName = "/current-load";
     if (auto localStore = store.dynamic_pointer_cast<nix::LocalFSStore>())
-        currentLoad = std::string{localStore->config.stateDir} + currentLoadName;
+        currentLoad = localStore->config.stateDir.get() / "current-load";
     else
-        currentLoad = nix::settings.nixStateDir + currentLoadName;
+        currentLoad = std::filesystem::path{nix::settings.nixStateDir} / "current-load";
 
     int amWilling = nix::readInt(source);
 
@@ -294,7 +294,7 @@ try {
             sshStore = nix::openStore(storeUri, params);
             sshStore->connect();
         } catch (std::exception & e) {
-            auto msg = nix::chomp(nix::drainFD(5, false));
+            auto msg = nix::chomp(nix::drainFD(5, {.block = false}));
             using namespace nix;
             printError("NSH Error: cannot build on '%s': %s%s", storeUri, e.what(), msg.empty() ? "" : ": " + msg);
             std::cerr << "# decline\n";
@@ -304,7 +304,7 @@ try {
 
     std::cerr << "# accept\n" << storeUri << "\n";
 
-    auto inputs = nix::readStrings<nix::PathSet>(source);
+    auto inputs = nix::readStrings<nix::StringSet>(source);
     auto wantedOutputs = nix::readStrings<nix::StringSet>(source);
 
     mkdir(currentLoad.c_str(), 0777);
@@ -312,7 +312,7 @@ try {
     nix::AutoCloseFD uploadLock;
     {
         auto setUpdateLock = [&](auto && fileName) {
-            uploadLock = nix::openLockFile(currentLoad + "/" + escapeUri(fileName) + ".upload-lock", true);
+            uploadLock = nix::openLockFile(currentLoad / (escapeUri(fileName) + ".upload-lock"), true);
         };
         try {
             setUpdateLock(storeUri);
@@ -341,7 +341,7 @@ try {
         signal(SIGALRM, old);
     }
 
-    auto substitute = nix::settings.buildersUseSubstitutes ? nix::Substitute : nix::NoSubstitute;
+    auto substitute = nix::settings.getWorkerSettings().buildersUseSubstitutes ? nix::Substitute : nix::NoSubstitute;
 
     {
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, nix::fmt("copying dependencies to '%s'", storeUri));
@@ -353,7 +353,7 @@ try {
             std::cerr << "# decline-permanently\n";
             return 0;
         }
-        nix::PathSet rootDrv;
+        nix::StringSet rootDrv;
         rootDrv.insert(store->printStorePath(drvPath));
         try {
             nix::copyClosure(*store, *sshStore, store->parseStorePathSet(rootDrv), nix::NoRepair, nix::NoCheckSigs, substitute);
@@ -448,7 +448,7 @@ try {
                     printError("NSH Error: realisation for output %s not found on remote store", outputName);
                     return 1;
                 }
-                missingRealisations.insert(*r);
+                missingRealisations.insert({*r, thisOutputId});
                 missingPaths.insert(r->outPath);
             }
         }

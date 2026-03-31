@@ -5,7 +5,9 @@
 #include <nix/util/users.hh>
 #include <nix/util/strings.hh>
 #include <nix/util/error.hh>
+#include <nix/util/executable-path.hh>
 #include <nix/store/globals.hh>
+#include <nix/store/global-paths.hh>
 
 #define NIX_CONF_DIR "/etc/nix"
 
@@ -17,7 +19,7 @@ Settings ourSettings;
 
 void loadConfFile(nix::AbstractConfig & config)
 {
-    auto applyConfigFile = [&](const nix::Path & path) {
+    auto applyConfigFile = [&](const std::filesystem::path & path) {
         try {
             std::string contents =  nix::readFile(path);
             config.applyConfig(contents, path);
@@ -25,7 +27,7 @@ void loadConfFile(nix::AbstractConfig & config)
         }
     };
 
-    applyConfigFile(nix::settings.nixConfDir + "/nsh.conf");
+    applyConfigFile(nix::nixConfDir() / "nsh.conf");
 
     auto files = ourSettings.userConfFiles;
     for (auto file = files.rbegin(); file != files.rend(); file++) {
@@ -38,19 +40,19 @@ void loadConfFile(nix::AbstractConfig & config)
     }
 }
 
-std::vector<nix::Path> getUserConfigFiles()
+std::vector<std::filesystem::path> getUserConfigFiles()
 {
     // Use the paths specified in NSH_USER_CONF_FILES if it has been defined
-    auto confFiles = nix::getEnv("NSH_USER_CONF_FILES");
+    auto confFiles = nix::getEnvOs(OS_STR("NIX_USER_CONF_FILES"));
     if (confFiles.has_value()) {
-        return nix::tokenizeString<std::vector<std::string>>(confFiles.value(), ":");
+        return nix::ExecutablePath::parse(*confFiles).directories;
     }
 
     // Use the paths specified by the XDG spec
-    std::vector<nix::Path> files;
+    std::vector<std::filesystem::path> files;
     auto dirs = nix::getConfigDirs();
     for (auto & dir : dirs) {
-        files.insert(files.end(), dir + "/nsh.conf");
+        files.insert(files.end(), dir / "nsh.conf");
     }
     return files;
 }

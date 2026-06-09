@@ -1,0 +1,6 @@
+inputs:
+  nixpkgs:
+    url: github:nixos/nixpkgs
+  restclient-cpp:
+    url: github:mrtazz/restclient-cpp
+    flake: false

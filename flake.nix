@@ -26,7 +26,7 @@
           in function pkgs system);
     in {
       checks = eachDefaultSystem (pkgs: system:
-        import ./tests.nix {
+        import ./package/tests.nix {
           inherit nixpkgs pkgs;
           # nix-cli, not default: default is nix-everything, which pulls the
           # fork's whole test pipeline into every CI run. The VM nodes only
@@ -37,7 +37,7 @@
       );
       packages = eachDefaultSystem (pkgs: system: rec {
         default = nix-scheduler-hook;
-        nix-scheduler-hook = pkgs.callPackage ./default.nix {
+        nix-scheduler-hook = pkgs.callPackage ./package/default.nix {
           restclient-cpp = inputs.restclient-cpp;
           nix = nix.packages.${system}.default;
         };

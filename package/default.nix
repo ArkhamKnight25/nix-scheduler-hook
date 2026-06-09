@@ -15,11 +15,16 @@
 }:
 clangStdenv.mkDerivation {
   name = "nix-scheduler-hook";
-  src = lib.sourceFilesBySuffices ./. [
-    "meson.build"
-    ".cc"
-    ".hh"
-  ];
+  # Filtered source: only the files meson consumes, so edits to docs, CI,
+  # or the nix files themselves don't change the source hash and force
+  # rebuilds of the package and every VM test image built from it.
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../meson.build
+      (lib.fileset.fileFilter (file: file.hasExt "cc" || file.hasExt "hh") ../src)
+    ];
+  };
 
   nativeBuildInputs = [
     meson

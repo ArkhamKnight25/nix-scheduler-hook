@@ -37,7 +37,12 @@ void NshStoreConfig::anchor() {}
  * `nsh.conf` (if present) is loaded first and overridden by query params. */
 static StoreReference::Params bridgeParamsToSettings(const StoreReference::Params & params)
 {
-    ::loadConfFile(ourSettings);
+    /* Same layered config load as hook mode; a broken nsh.conf must fail
+     * store opening loudly instead of being silently ignored. */
+    if (auto res = ::readConfig(ourSettings); !res) {
+        res.error().addTrace({}, "failed to read nsh configuration");
+        throw res.error();
+    }
     for (const auto & [name, value] : params) {
         try {
             ourSettings.set(name, value);

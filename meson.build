@@ -49,8 +49,10 @@ common_deps = [
     slurm_dep,
 ]
 
-# Build-hook mode: standalone executable, links nix libs.
-executable('nsh', sched_sources + files('src/main.cc'),
+# Build-hook mode: standalone executable, links nix libs. The hook-protocol
+# helpers (build_request, build_remote_process) are hook-only: the plugin is
+# driven through the Builder API and never speaks the hook protocol.
+executable('nsh', sched_sources + files('src/main.cc', 'src/build_request.cc', 'src/build_remote_process.cc'),
     dependencies : common_deps + [
         nix_util_dep,
         nix_store_dep,

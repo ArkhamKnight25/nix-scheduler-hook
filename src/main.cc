@@ -1,3 +1,5 @@
+#include <expected>
+#include <format>
 #include <iostream>
 #include <nix/store/store-api.hh>
 #include <optional>
@@ -39,6 +41,8 @@ using namespace std::chrono_literals;
 
 #include "settings.hh"
 #include "sched_util.hh"
+#include "build_request.hh"
+#include "build_remote_process.hh"
 #include "slurm.hh"
 #include "pbs.hh"
 #include "slurm-native.hh"
@@ -113,97 +117,36 @@ struct LogPipeBuf : std::streambuf
     bool dropping = false;
 };
 
-std::filesystem::path getBuildRemoteFromNixBin(std::filesystem::path nixBin)
-{
-    if (std::filesystem::is_symlink(nixBin))
-        nixBin = std::filesystem::read_symlink(nixBin);
-    return nixBin.parent_path().parent_path() / "libexec" / "nix" / "build-remote";
-}
-
-struct FallbackHookInstance
-{
-    FallbackHookInstance(
-      int amWilling,
-      std::string neededSystem,
-      std::string drvPath,
-      nix::StringSet requiredFeatures,
-      nix::FdSource & source
-    ) {
-        toHook.create();
-
-        pid = nix::startProcess([&]() {
-            if (dup2(toHook.readSide.get(), STDIN_FILENO) == -1)
-                throw nix::SysError("redirecting NSH's toHook to build-remote's STDIN");
-
-            std::filesystem::path nixBinPath = "nix";
-            auto nixBinDirOpt = nix::getEnvNonEmpty("NIX_BIN_DIR");
-            if (nixBinDirOpt)
-                nixBinPath = std::filesystem::path(*nixBinDirOpt) / "nix";
-
-            nix::Strings args{nixBinPath.filename().string(), "__build-remote", std::to_string(nix::verbosity)};
-            execvp(nixBinPath.native().c_str(), nix::stringsToCharPtrs(args).data());
-
-            // If nix __build-remote doesn't work, try the legacy libexec/nix/build-remote symlink
-            std::filesystem::path buildRemotePath;
-            if (nixBinDirOpt) {
-                std::filesystem::path nixBin = std::filesystem::path(*nixBinDirOpt) / "nix";
-                if (std::filesystem::exists(nixBin))
-                    buildRemotePath = getBuildRemoteFromNixBin(nixBin);
-            }
-            else if (auto pathOpt = nix::getEnvNonEmpty("PATH")) {
-                auto paths = nix::tokenizeString<nix::Strings>(*pathOpt, ":");
-                for (auto path : paths) {
-                    std::filesystem::path nixBin = std::filesystem::path(path) / "nix";
-                    if (std::filesystem::exists(nixBin)) {
-                        buildRemotePath = getBuildRemoteFromNixBin(nixBin);
-                        break;
-                    }
-                }
-            }
-            if (!buildRemotePath.empty()) {
-                nix::Strings args2{buildRemotePath.filename().string(), std::to_string(nix::verbosity)};
-                execv(buildRemotePath.native().c_str(), nix::stringsToCharPtrs(args2).data());
-            }
-
-            throw nix::SysError("executing normal build hook");
-        });
-
-        toHook.readSide = -1;
-
-        sink = nix::FdSink(toHook.writeSide.get());
-        std::map<std::string, nix::Config::SettingInfo> settings;
-        nix::globalConfig.getSettings(settings);
-        for (auto & setting : settings)
-            sink << 1 << setting.first << setting.second.value;
-        sink << 0;
-
-        sink << "try" << amWilling << neededSystem << drvPath << requiredFeatures;
-        sink.flush();
-
-        auto inputs = nix::readStrings<nix::StringSet>(source);
-        auto wantedOutputs = nix::readStrings<nix::StringSet>(source);
-
-        sink << inputs << wantedOutputs;
-        sink.flush();
-    }
-
-    int wait()
-    {
-        return pid.wait();
-    }
-
-    ~FallbackHookInstance()
-    {
-        if (pid != -1) {
-            pid.kill();
-            pid.wait();
-        }
-    }
-
-    nix::Pipe toHook;
-    nix::Pid pid;
-    nix::FdSink sink;
+struct NSHCli {
+    nix::Verbosity verbosity;
 };
+
+static std::expected<NSHCli, nix::Error> parseCli(int argc, char ** argv)
+{
+    if (argc != 2) {
+        return std::unexpected(
+            nix::Error(std::format("expected exactly one argument, got {}", argc)));
+    }
+
+    nix::Verbosity verbosity;
+    try {
+        verbosity = static_cast<nix::Verbosity>(std::stoi(std::string(argv[1])));
+    } catch (const std::exception & e) {
+        auto error = nix::Error(e.what());
+        error.addTrace({},
+            std::format("expected valid integer verbosity argument < {}, got `{}`",
+                static_cast<int>(nix::lvlVomit), argv[1]));
+        return std::unexpected(error);
+    }
+    if (verbosity < nix::lvlError || verbosity > nix::lvlVomit) {
+        return std::unexpected(nix::Error(
+            std::format("expected verbosity between {} and {}, got `{}`",
+                static_cast<int>(nix::lvlError), static_cast<int>(nix::lvlVomit),
+                static_cast<int>(verbosity))));
+    }
+
+    return NSHCli{verbosity};
+}
 
 int main(int argc, char **argv)
 {
@@ -216,27 +159,33 @@ try {
     unsetenv("DISPLAY");
     unsetenv("SSH_ASKPASS");
 
-    if (argc != 2)
-        throw nix::UsageError("called without required arguments");
-
-    nix::verbosity = (nix::Verbosity) std::stoll(argv[1]);
+    auto cli = parseCli(argc, argv);
+    if (!cli) {
+        cli.error().addTrace({}, "failed to parse cli arguments");
+        using namespace nix;
+        printError("NSH Error: %s", cli.error().what());
+        std::cerr << "# decline-permanently\n";
+        return 1;
+    }
+    nix::verbosity = cli->verbosity;
 
     nix::FdSource source(STDIN_FILENO);
 
     /* Read the parent's settings. */
-    while (nix::readInt(source)) {
-        auto name = nix::readString(source);
-        auto value = nix::readString(source);
-        nix::settings.set(name, value);
+    if (auto res = transferSettingsIn(source, nix::globalConfig); !res) {
+        res.error().addTrace({}, "failed to read and transfer settings from parent nix process");
+        using namespace nix;
+        printError("NSH Error: %s", res.error().what());
+        std::cerr << "# decline-permanently\n";
+        return 1;
     }
 
-    try {
-        auto s = nix::readString(source);
-        if (s != "try")
-            return 0;
-    } catch (nix::EndOfFile &) {
+    /* Nix probes the hook (and winds it down between builds) by closing
+       our stdin; an unreadable or non-"try" request just means there is
+       no more work, so exit quietly rather than declining. */
+    auto buildRequestUnvalidated = BuildRequest<std::string>::read(source);
+    if (!buildRequestUnvalidated || buildRequestUnvalidated->command != "try")
         return 0;
-    }
 
     nix::initLibStore();
     nix::initPlugins();
@@ -267,50 +216,37 @@ try {
     else
         currentLoad = std::filesystem::path{nix::settings.nixStateDir} / "current-load";
 
-    int amWilling = nix::readInt(source);
-
-    ::loadConfFile(ourSettings);
-
-    auto neededSystem = nix::readString(source);
-    nix::StorePath drvPath = store->parseStorePath(nix::readString(source));
-    auto requiredFeatures = nix::readStrings<nix::StringSet>(source);
-
-    bool tryFallback = false;
-
-    if (!ourSettings.systems.get().contains(neededSystem)) {
+    if (auto res = readConfig(ourSettings); !res) {
+        res.error().addTrace({}, "failed to read nsh configuration");
         using namespace nix;
-        printError("needed system %s does not match our systems %s", neededSystem, boost::algorithm::join(ourSettings.systems.get(), ", "));
-        tryFallback = true;
+        printError("NSH Error: %s", res.error().what());
+        std::cerr << "# decline-permanently\n";
+        return 1;
     }
 
-    auto systemFeatures = ourSettings.systemFeatures.get();
-    for (auto & feature : requiredFeatures) {
-        if (systemFeatures.find(feature) == systemFeatures.end()) {
+    auto buildRequest = buildRequestUnvalidated->validate(
+        store,
+        ourSettings.systems.get(),
+        ourSettings.systemFeatures.get(),
+        ourSettings.mandatorySystemFeatures.get());
+    if (!buildRequest) {
+        {
             using namespace nix;
-            printError("required feature %s not available, available features:", feature);
-            for (auto & f : systemFeatures) {
-                printError(f);
-            }
-            tryFallback = true;
+            printError("NSH: cannot handle this build: %s", buildRequest.error().what());
         }
-    }
-
-    auto mandatorySystemFeatures = ourSettings.mandatorySystemFeatures.get();
-    for (auto & feature : mandatorySystemFeatures) {
-        if (requiredFeatures.find(feature) == requiredFeatures.end()) {
-            using namespace nix;
-            printError("derivation does not require mandatory feature %s, required features:", feature);
-            for (auto & f : requiredFeatures) {
-                printError(f);
-            }
-            tryFallback = true;
-        }
-    }
-
-    if (tryFallback) {
         try {
             nix::Activity act(*nix::logger, nix::lvlInfo, nix::actUnknown, "falling back to normal build hook");
-            return FallbackHookInstance(amWilling, neededSystem, store->printStorePath(drvPath), requiredFeatures, source).wait();
+            auto remoteBuilder = NixBuildRemoteProcess::start(*buildRequestUnvalidated, source);
+            if (!remoteBuilder) {
+                remoteBuilder.error().addTrace({}, "failed to start nix remote builder process");
+                throw remoteBuilder.error();
+            }
+            auto returnCode = remoteBuilder->wait();
+            if (!returnCode) {
+                returnCode.error().addTrace({}, "failed to wait for nix remote builder to finish");
+                throw returnCode.error();
+            }
+            return *returnCode;
         } catch (nix::Interrupted &) {
             throw;
         } catch (std::exception & e) {
@@ -320,6 +256,10 @@ try {
             return 0;
         }
     }
+
+    nix::StorePath drvPath = buildRequest->derivationPath;
+    auto & neededSystem = buildRequest->system;
+    auto & requiredFeatures = buildRequest->systemFeatures;
 
     std::unique_ptr<Scheduler> scheduler;
     try {

@@ -1,9 +1,13 @@
 #pragma once
 
+#include <expected>
 #include <filesystem>
 #include <string>
 
+#include <nix/util/config-global.hh>
 #include <nix/util/configuration.hh>
+#include <nix/util/error.hh>
+#include <nix/util/serialise.hh>
 #include <nix/util/types.hh>
 
 struct Settings : public nix::Config
@@ -226,7 +230,13 @@ struct Settings : public nix::Config
     };
 };
 
-void loadConfFile(nix::AbstractConfig & config);
+/* Apply the layered nsh configuration (system nsh.conf, user config files,
+   NSH_CONFIG environment variable) to `config`. Missing files are skipped;
+   unreadable or unparsable ones are reported as errors. */
+std::expected<void, nix::Error> readConfig(nix::AbstractConfig & config);
+
+std::expected<void, nix::Error> transferSettingsIn(nix::FdSource & source, nix::GlobalConfig & config);
+std::expected<void, nix::Error> transferSettingsOut(nix::GlobalConfig & config, nix::FdSink & sink);
 
 std::vector<std::filesystem::path> getUserConfigFiles();
 

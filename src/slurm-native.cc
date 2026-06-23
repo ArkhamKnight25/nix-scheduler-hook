@@ -12,8 +12,6 @@ using namespace std::chrono_literals;
 #include <nix/store/store-api.hh>
 #include <nix/store/derivations.hh>
 
-#include <slurm/slurm.h>
-
 SlurmNative::SlurmNative()
 {
     slurm_init(ourSettings.slurmConf.get() != "" ? ourSettings.slurmConf.get().c_str() : nullptr);
@@ -74,7 +72,7 @@ void SlurmNative::submit(nix::StorePath drvPath)
         slurm_free_submit_response_response_msg(resp);
         throw SlurmNativeError(slurm_strerror(errorCode));
     }
-    nativeJobIds[drvPath] = resp->step_id.job_id;
+    nativeJobIds[drvPath] = resp->step_id;
     jobContext.jobId = std::to_string(resp->step_id.job_id);
     slurm_free_submit_response_response_msg(resp);
     unblockSignals();
@@ -103,9 +101,9 @@ static bool isLive(job_states state)
     return (state == JOB_PENDING || state == JOB_RUNNING);
 }
 
-static job_states getJobState(uint32_t jobId)
+static job_states getJobState(slurm_step_id_t jobId)
 {
-    slurm_selected_step_t jobs = {nullptr, NO_VAL, NO_VAL, {0, jobId, 0, 0} };
+    slurm_selected_step_t jobs = {nullptr, NO_VAL, NO_VAL, jobId };
     job_state_response_msg_t *resp;
     if (slurm_load_job_state(1, &jobs, &resp) || resp->jobs_count != 1) {
         slurm_free_job_state_response_msg(resp);
@@ -117,7 +115,7 @@ static job_states getJobState(uint32_t jobId)
     }
 }
 
-static uint32_t getJobReturnCode(uint32_t jobId)
+static uint32_t getJobReturnCode(slurm_step_id_t jobId)
 {
     job_info_msg_t *resp;
     if (slurm_load_job(&resp, jobId, 0) || resp->record_count != 1) {
@@ -156,7 +154,7 @@ SlurmNative::~SlurmNative()
         if (isLive(getJobState(nativeJobId))) {
             if (slurm_kill_job(nativeJobId, SIGTERM, 0) && isLive(getJobState(nativeJobId))) {
                 using namespace nix;
-                printError("error killing job %" PRIu32 ": %s", nativeJobId, slurm_strerror(errno));
+                printError("error killing job %" PRIu32 ": %s", nativeJobId.job_id, slurm_strerror(errno));
             }
         }
     }

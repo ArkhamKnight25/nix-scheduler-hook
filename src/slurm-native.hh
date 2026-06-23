@@ -3,6 +3,7 @@
 #include <string>
 #include <exception>
 
+#include <slurm/slurm.h>
 #include <slurm/slurm_errno.h>
 
 #include <nix/store/path.hh>
@@ -19,7 +20,7 @@ struct SlurmNativeConstraintError : public std::runtime_error
 
 class SlurmNative : public Scheduler
 {
-    std::map<nix::StorePath, uint32_t> nativeJobIds;
+    std::map<nix::StorePath, slurm_step_id_t> nativeJobIds;
 public:
     SlurmNative();
     ~SlurmNative();

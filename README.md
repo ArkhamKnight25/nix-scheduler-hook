@@ -12,6 +12,7 @@ General settings:
 - `remote-store`: The store URL to be used on the remote machine. See: [https://nix.dev/manual/nix/latest/store/types/](https://nix.dev/manual/nix/latest/store/types/). Default: `auto`.
 - `remote-nix-bin-dir`: Path to the Nix bin directory to use on the remote system. This should be a shared location on your cluster. Useful for when your cluster does not have Nix installed (see below).
 - `collect-garbage`: Run `nix-store --gc` on the `remote-store` after each job completes. Default: `false`.
+- `submit-script`: Path to a file containing the actual script submitted to the scheduler, normally you shouldn't need to change this. See the section **Modifying the Submit Script** below.
 
 ## Supported Job Schedulers
 
@@ -141,6 +142,28 @@ echo "Hello Slurm!" > $out
 ```
 
 By default, all derivations are opportunistically sent to NSH to be built on the cluster. If you want to prevent all but certain derivations from building on your cluster, you can additionally make use of the `mandatory-system-features` NSH setting. By default it is empty. If you set it to `nsh`, this will make all derivations which don't have `nsh` as a `requiredSystemFeatures` (e.g., everything in nixpkgs) build either through the fallback (regular) remote building hook or locally, and not on the cluster. This allows you to be selective about what gets sent to the cluster and what uses your own local resources for building.
+
+## Modifying the Submit Script
+
+You can set the `submit-script` configuration option to a file path containing a script template for job submission. This can be useful if you need to e.g. launch Nix inside of a container instead of running natively on the system. The following is the default script:
+
+```bash
+#!/bin/sh
+while ! %1%nix-store --store '%2%' --query --hash %3%/%4% >/dev/null 2>&1; do sleep 0.1; done;
+%1%nix-store --store '%2%' --realise %3%/%4% --quiet --option system-features '%5%' --add-root %6%;
+rc=$?;
+echo '@nsh done' >&2;
+exit $rc
+```
+
+Note the use of format specifiers to pass various settings:
+
+1. `remote-nix-bin-dir`, if set
+2. `remote-store`
+3. `store-dir`
+4. Derivation store path to build
+5. `system-features`
+6. Garbage Collector root path
 
 ## Known Limitations
 

@@ -69,6 +69,13 @@ struct Settings : public nix::Config
         "Run nix store gc on the remote-store after each job completes."
     };
 
+    nix::Setting<std::filesystem::path> submitScript {
+        this,
+        "",
+        "submit-script",
+        "Path to a file containing the actual script submitted to the scheduler, normally you shouldn't need to change this."
+    };
+
     nix::Setting<std::string> slurmConf {
         this,
         "",

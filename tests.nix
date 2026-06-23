@@ -1,6 +1,15 @@
 { pkgs, nixpkgs, nix-scheduler-hook }:
 with pkgs;
 let
+  testSubmitScript = writeText "submit.sh" ''
+    #!/bin/sh
+    while ! %1%nix-store --store '%2%' --query --hash %3%/%4% >/dev/null 2>&1; do sleep 0.1; done;
+    echo "Hello NSH!" >&2;
+    %1%nix-store --store '%2%' --realise %3%/%4% --quiet --option system-features '%5%' --add-root %6%;
+    rc=$?;
+    echo '@nsh done' >&2;
+    exit $rc
+  '';
   slurmconfig = {
     services.slurm = {
       controlMachine = "control";
@@ -417,6 +426,13 @@ in
           node.succeed("nix --version")
       submit.succeed("sed -i '/remote-store/d' /etc/nix/nsh.conf")
       submit.succeed("sed -i '/remote-nix-bin-dir/d' /etc/nix/nsh.conf")
+
+      with subtest("run_nix_build_custom_submit"):
+        submit.succeed("echo 'submit-script = ${testSubmitScript}' >> /etc/nix/nsh.conf")
+        out = submit.succeed(build_derivation_simple)
+        print(out)
+        t.assertIn("Hello NSH!", out)
+      submit.succeed("sed -i '/submit-script/d' /etc/nix/nsh.conf")
 
       build_derivation_hello = """
         nix-build \

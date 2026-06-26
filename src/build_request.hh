@@ -3,38 +3,70 @@
 #include <expected>
 #include <string>
 
+#include <nix/store/derivations.hh>
 #include <nix/store/path.hh>
 #include <nix/store/store-api.hh>
 #include <nix/util/error.hh>
 #include <nix/util/serialise.hh>
 
-template <typename PathType = std::string> struct BuildRequest {
+class BuildRequest;
+
+/* The hook request as it arrives on the wire. The build inputs and wanted
+ * outputs are NOT part of this: nix only sends them after the hook has
+ * accepted the build, so they are read separately at accept time. */
+class BuildRequestNoDerivation final {
+public:
   std::string command;
   bool willingToBuildLocally;
   std::string system;
   nix::StringSet systemFeatures;
-  PathType derivationPath;
+  std::string derivationPath;
 
-  explicit BuildRequest(std::string command, bool willingToBuildLocally,
-                        std::string system, nix::StringSet systemFeatures,
-                        PathType derivationPath)
-      : command(std::move(command)),
-        willingToBuildLocally(std::move(willingToBuildLocally)),
-        system(std::move(system)), systemFeatures(std::move(systemFeatures)),
-        derivationPath(std::move(derivationPath)) {}
+  explicit BuildRequestNoDerivation(std::string command,
+                                    bool willingToBuildLocally,
+                                    std::string system,
+                                    nix::StringSet systemFeatures,
+                                    std::string derivationPath)
+      : command{std::move(command)},
+        willingToBuildLocally{willingToBuildLocally}, system{std::move(system)},
+        systemFeatures{std::move(systemFeatures)},
+        derivationPath{std::move(derivationPath)} {}
 
-  /* These are only defined (as explicit specializations) for
-   * PathType = std::string, the wire representation. No `requires`
-   * clauses: clang mangles constrained declarations differently from
-   * their unconstrained explicit specializations, breaking the link. */
-  static std::expected<BuildRequest<std::string>, nix::Error>
-  read(nix::FdSource &source);
-  std::expected<void, nix::Error> send(nix::FdSink &sink) const;
+  static auto read(nix::FdSource &source)
+      -> std::expected<BuildRequestNoDerivation, nix::Error>;
+  auto send(nix::FdSink &sink) const -> std::expected<void, nix::Error>;
 
   /// `availableSystems` is a set rather than a single system: one cluster
   /// can serve several system types (see the `systems` setting).
-  std::expected<BuildRequest<nix::StorePath>, nix::Error>
-  validate(nix::ref<nix::Store> store, nix::StringSet availableSystems,
-           nix::StringSet availableSystemFeatures,
-           nix::StringSet systemFeatureRequests) const;
+  auto validate(const nix::StringSet &availableSystems,
+                const nix::StringSet &availableSystemFeatures,
+                const nix::StringSet &systemFeatureRequests) const
+      -> std::expected<void, nix::Error>;
+
+  /// Parse the derivation path against `store` and read the derivation,
+  /// producing the full request the schedulers consume.
+  auto addDerivation(nix::ref<nix::Store> store) const
+      -> std::expected<BuildRequest, nix::Error>;
+};
+
+/* A request whose derivation path has been parsed and whose derivation has
+ * been read from the store. */
+class BuildRequest final {
+public:
+  std::string command;
+  bool willingToBuildLocally;
+  std::string system;
+  nix::StringSet systemFeatures;
+  nix::StorePath derivationPath;
+  nix::Derivation derivation;
+
+  explicit BuildRequest(std::string command, bool willingToBuildLocally,
+                        std::string system, nix::StringSet systemFeatures,
+                        nix::StorePath derivationPath,
+                        nix::Derivation derivation)
+      : command{std::move(command)},
+        willingToBuildLocally{willingToBuildLocally}, system{std::move(system)},
+        systemFeatures{std::move(systemFeatures)},
+        derivationPath{std::move(derivationPath)},
+        derivation{std::move(derivation)} {}
 };

@@ -1,6 +1,6 @@
-#include "slurm-native.hh"
-#include "settings.hh"
-#include "sched_util.hh"
+#include "scheduler.hh"
+#include "../../settings.hh"
+#include "../utils.hh"
 
 #include <nlohmann/json.hpp>
 using namespace nlohmann;

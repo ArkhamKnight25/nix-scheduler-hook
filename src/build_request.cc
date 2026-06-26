@@ -14,9 +14,8 @@ using std::expected;
 using std::string;
 using std::unexpected;
 
-template <>
-expected<BuildRequest<string>, Error>
-BuildRequest<string>::read(nix::FdSource &source) {
+auto BuildRequestNoDerivation::read(nix::FdSource &source)
+    -> expected<BuildRequestNoDerivation, Error> {
   std::string command;
   try {
     command = nix::readString(source);
@@ -58,13 +57,12 @@ BuildRequest<string>::read(nix::FdSource &source) {
     return unexpected(error);
   }
 
-  return BuildRequest(command, willingToBuildLocally, system, systemFeatures,
-                      derivationPath);
+  return BuildRequestNoDerivation(command, willingToBuildLocally, system,
+                                  systemFeatures, derivationPath);
 }
 
-template <>
-expected<void, nix::Error>
-BuildRequest<std::string>::send(nix::FdSink &sink) const {
+auto BuildRequestNoDerivation::send(nix::FdSink &sink) const
+    -> expected<void, nix::Error> {
   try {
     sink << this->command;
   } catch (nix::Error &error) {
@@ -104,11 +102,9 @@ BuildRequest<std::string>::send(nix::FdSink &sink) const {
   return {};
 }
 
-template <>
-expected<BuildRequest<nix::StorePath>, Error>
-BuildRequest<string>::validate(ref<Store> store, StringSet availableSystems,
-                               StringSet availableSystemFeatures,
-                               StringSet systemFeatureRequests) const {
+auto BuildRequestNoDerivation::validate(
+    const StringSet &availableSystems, const StringSet &availableSystemFeatures,
+    const StringSet &systemFeatureRequests) const -> expected<void, Error> {
   if (this->command != "try") {
     return unexpected(Error("expected command to be 'try', got `{}`", command));
   }
@@ -151,15 +147,19 @@ BuildRequest<string>::validate(ref<Store> store, StringSet availableSystems,
                           unsatisfiedFeatureRequestsString)));
   }
 
-  /* No dummy StorePath: its constructor validates the name and would
-   * throw on a default of "". */
+  return {};
+}
+
+auto BuildRequestNoDerivation::addDerivation(ref<Store> store) const
+    -> expected<BuildRequest, Error> {
   try {
     auto storePath = store->parseStorePath(derivationPath);
-    return BuildRequest<nix::StorePath>(
-        this->command, this->willingToBuildLocally, this->system,
-        this->systemFeatures, std::move(storePath));
+    auto derivation = store->readDerivation(storePath);
+    return BuildRequest(this->command, this->willingToBuildLocally,
+                        this->system, this->systemFeatures,
+                        std::move(storePath), std::move(derivation));
   } catch (Error &error) {
-    error.addTrace({}, "failed to parse derivation path");
+    error.addTrace({}, "failed to parse the derivation path or read the derivation");
     return unexpected(error);
   }
 }

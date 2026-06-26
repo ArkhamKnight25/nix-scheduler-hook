@@ -40,12 +40,10 @@ using namespace std::chrono_literals;
 #include <nix/util/config-global.hh>
 
 #include "settings.hh"
-#include "sched_util.hh"
+#include "scheduler/utils.hh"
 #include "build_request.hh"
 #include "build_remote_process.hh"
-#include "slurm.hh"
-#include "pbs.hh"
-#include "slurm-native.hh"
+#include "scheduler/all.hh"
 #include "logging.hh"
 
 static void handleAlarm(int sig) {}
@@ -183,7 +181,7 @@ try {
     /* Nix probes the hook (and winds it down between builds) by closing
        our stdin; an unreadable or non-"try" request just means there is
        no more work, so exit quietly rather than declining. */
-    auto buildRequestUnvalidated = BuildRequest<std::string>::read(source);
+    auto buildRequestUnvalidated = BuildRequestNoDerivation::read(source);
     if (!buildRequestUnvalidated || buildRequestUnvalidated->command != "try")
         return 0;
 
@@ -224,15 +222,14 @@ try {
         return 1;
     }
 
-    auto buildRequest = buildRequestUnvalidated->validate(
-        store,
+    auto valid = buildRequestUnvalidated->validate(
         ourSettings.systems.get(),
         ourSettings.systemFeatures.get(),
         ourSettings.mandatorySystemFeatures.get());
-    if (!buildRequest) {
+    if (!valid) {
         {
             using namespace nix;
-            printError("NSH: cannot handle this build: %s", buildRequest.error().what());
+            printError("NSH: cannot handle this build: %s", valid.error().what());
         }
         try {
             nix::Activity act(*nix::logger, nix::lvlInfo, nix::actUnknown, "falling back to normal build hook");
@@ -255,6 +252,14 @@ try {
             std::cerr << "# decline\n";
             return 0;
         }
+    }
+
+    auto buildRequest = buildRequestUnvalidated->addDerivation(store);
+    if (!buildRequest) {
+        using namespace nix;
+        printError("NSH Error: %s", buildRequest.error().what());
+        std::cerr << "# decline\n";
+        return 0;
     }
 
     nix::StorePath drvPath = buildRequest->derivationPath;
@@ -291,7 +296,7 @@ try {
         wantedOutputs = nix::readStrings<nix::StringSet>(source);
     }
 
-    auto drv = store->readDerivation(drvPath);
+    auto & drv = buildRequest->derivation;
     nix::StorePathSet wantedPaths;
     for (auto & [name, output] : drv.outputsAndOptPaths(*store)) {
         wantedPaths.insert(*output.second);
@@ -416,7 +421,9 @@ try {
     }
 
     if (ourSettings.remoteBuilding.get()) {
-        auto drv = store->readDerivation(drvPath);
+        /* Mutable copy: inputSrcs is rewritten below before shipping the
+         * derivation to the remote daemon. */
+        auto drv = buildRequest->derivation;
 
         // We always use ssh-ng, so we always know if we're trusted or not
         bool trusted = *sshStore->isTrustedClient();

@@ -115,7 +115,7 @@ expected<void, nix::Error> execNixBuildRemoteLegacy() {
 }
 
 expected<NixBuildRemoteProcess, nix::Error>
-NixBuildRemoteProcess::start(const BuildRequest<std::string> &request,
+NixBuildRemoteProcess::start(const BuildRequestNoDerivation &request,
                              FdSource &parentStdin) {
   nix::Pipe pipe;
   try {

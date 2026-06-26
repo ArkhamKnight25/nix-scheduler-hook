@@ -10,7 +10,7 @@
 #include <nix/store/store-registration.hh>
 
 #include "settings.hh"
-#include "scheduler.hh"
+#include "scheduler/scheduler.hh"
 
 namespace nix {
 

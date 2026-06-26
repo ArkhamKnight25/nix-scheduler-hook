@@ -36,9 +36,9 @@ nix_main_hdr = nix_main_dep.partial_dependency(compile_args : true, includes : t
 sched_sources = files(
     'src/settings.cc',
     'src/node-selection.cc',
-    'src/slurm.cc',
-    'src/pbs.cc',
-    'src/slurm-native.cc',
+    'src/scheduler/slurm/scheduler.cc',
+    'src/scheduler/pbs/scheduler.cc',
+    'src/scheduler/slurm-native/scheduler.cc',
 )
 
 common_deps = [

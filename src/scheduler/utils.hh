@@ -1,6 +1,6 @@
 #pragma once
 
-#include "settings.hh"
+#include "../settings.hh"
 
 #include <algorithm>
 #include <chrono>

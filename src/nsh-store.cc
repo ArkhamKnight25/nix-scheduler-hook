@@ -1,7 +1,5 @@
 #include "nsh-store.hh"
-#include "slurm.hh"
-#include "pbs.hh"
-#include "slurm-native.hh"
+#include "scheduler/all.hh"
 #include "logging.hh"
 
 #include <atomic>

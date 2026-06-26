@@ -15,8 +15,8 @@
 #include <nix/util/logging.hh>
 #include <nix/util/signals.hh>
 
-#include "settings.hh"
-#include "node-selection.hh"
+#include "../settings.hh"
+#include "../node-selection.hh"
 
 class Scheduler
 {

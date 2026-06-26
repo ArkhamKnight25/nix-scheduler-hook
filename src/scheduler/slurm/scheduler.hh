@@ -1,4 +1,4 @@
-#include "scheduler.hh"
+#include "../scheduler.hh"
 
 #include <nix/store/store-api.hh>
 #include <string>

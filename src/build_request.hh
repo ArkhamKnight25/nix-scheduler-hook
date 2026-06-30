@@ -14,7 +14,7 @@ class BuildRequest;
 /* The hook request as it arrives on the wire. The build inputs and wanted
  * outputs are NOT part of this: nix only sends them after the hook has
  * accepted the build, so they are read separately at accept time. */
-class BuildRequestNoDerivation final {
+class BuildRequestBuilder final {
 public:
   std::string command;
   bool willingToBuildLocally;
@@ -22,7 +22,7 @@ public:
   nix::StringSet systemFeatures;
   std::string derivationPath;
 
-  explicit BuildRequestNoDerivation(std::string command,
+  explicit BuildRequestBuilder(std::string command,
                                     bool willingToBuildLocally,
                                     std::string system,
                                     nix::StringSet systemFeatures,
@@ -32,8 +32,8 @@ public:
         systemFeatures{std::move(systemFeatures)},
         derivationPath{std::move(derivationPath)} {}
 
-  static auto read(nix::FdSource &source)
-      -> std::expected<BuildRequestNoDerivation, nix::Error>;
+  static auto readHeader(nix::FdSource &source)
+      -> std::expected<BuildRequestBuilder, nix::Error>;
   auto send(nix::FdSink &sink) const -> std::expected<void, nix::Error>;
 
   /// `availableSystems` is a set rather than a single system: one cluster

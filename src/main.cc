@@ -181,7 +181,7 @@ try {
     /* Nix probes the hook (and winds it down between builds) by closing
        our stdin; an unreadable or non-"try" request just means there is
        no more work, so exit quietly rather than declining. */
-    auto buildRequestUnvalidated = BuildRequestNoDerivation::read(source);
+    auto buildRequestUnvalidated = BuildRequestBuilder::readHeader(source);
     if (!buildRequestUnvalidated || buildRequestUnvalidated->command != "try")
         return 0;
 

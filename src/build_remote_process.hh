@@ -24,7 +24,7 @@ public:
   NixBuildRemoteProcess &operator=(const NixBuildRemoteProcess &) = delete;
 
   static std::expected<NixBuildRemoteProcess, nix::Error>
-  start(const BuildRequestNoDerivation &request,
+  start(const BuildRequestBuilder &request,
         nix::FdSource &parentStdin);
 
   std::expected<int, nix::Error> wait();

@@ -35,7 +35,7 @@ NixBuildRemoteProcess::~NixBuildRemoteProcess() {
           {}, std::format(
                   "failure while killing nix remote builder process (pid = {})",
                   pid_t(pid)));
-      printError("[nsh] %s", error.what());
+      nix::warn("[nsh] %s", error.what());
     }
   }
 }
@@ -115,7 +115,7 @@ expected<void, nix::Error> execNixBuildRemoteLegacy() {
 }
 
 expected<NixBuildRemoteProcess, nix::Error>
-NixBuildRemoteProcess::start(const BuildRequestNoDerivation &request,
+NixBuildRemoteProcess::start(const BuildRequestBuilder &request,
                              FdSource &parentStdin) {
   nix::Pipe pipe;
   try {
@@ -148,9 +148,12 @@ NixBuildRemoteProcess::start(const BuildRequestNoDerivation &request,
     error.addTrace({}, "failed to start nix remote builder process");
     return unexpected(error);
   }
+  // construct the owner here, so the destructor kills the child if any of
+  // the transfers below fail
+  auto process = NixBuildRemoteProcess(nix::Pid(pid), std::move(pipe));
 
-  pipe.readSide = -1;
-  nix::FdSink sink(pipe.writeSide.get());
+  process.pipe.readSide = -1;
+  nix::FdSink sink(process.pipe.writeSide.get());
 
   auto result = transferSettingsOut(nix::globalConfig, sink);
   if (!result.has_value()) {
@@ -216,7 +219,7 @@ NixBuildRemoteProcess::start(const BuildRequestNoDerivation &request,
     return unexpected(error);
   }
 
-  return NixBuildRemoteProcess(std::move(pid), std::move(pipe));
+  return process;
 }
 
 expected<int, nix::Error> NixBuildRemoteProcess::wait() {

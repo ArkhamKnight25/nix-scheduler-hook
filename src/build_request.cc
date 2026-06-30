@@ -14,8 +14,8 @@ using std::expected;
 using std::string;
 using std::unexpected;
 
-auto BuildRequestNoDerivation::read(nix::FdSource &source)
-    -> expected<BuildRequestNoDerivation, Error> {
+auto BuildRequestBuilder::readHeader(nix::FdSource &source)
+    -> expected<BuildRequestBuilder, Error> {
   std::string command;
   try {
     command = nix::readString(source);
@@ -57,11 +57,11 @@ auto BuildRequestNoDerivation::read(nix::FdSource &source)
     return unexpected(error);
   }
 
-  return BuildRequestNoDerivation(command, willingToBuildLocally, system,
+  return BuildRequestBuilder(command, willingToBuildLocally, system,
                                   systemFeatures, derivationPath);
 }
 
-auto BuildRequestNoDerivation::send(nix::FdSink &sink) const
+auto BuildRequestBuilder::send(nix::FdSink &sink) const
     -> expected<void, nix::Error> {
   try {
     sink << this->command;
@@ -102,7 +102,7 @@ auto BuildRequestNoDerivation::send(nix::FdSink &sink) const
   return {};
 }
 
-auto BuildRequestNoDerivation::validate(
+auto BuildRequestBuilder::validate(
     const StringSet &availableSystems, const StringSet &availableSystemFeatures,
     const StringSet &systemFeatureRequests) const -> expected<void, Error> {
   if (this->command != "try") {
@@ -150,7 +150,7 @@ auto BuildRequestNoDerivation::validate(
   return {};
 }
 
-auto BuildRequestNoDerivation::addDerivation(ref<Store> store) const
+auto BuildRequestBuilder::addDerivation(ref<Store> store) const
     -> expected<BuildRequest, Error> {
   try {
     auto storePath = store->parseStorePath(derivationPath);

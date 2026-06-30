@@ -5,7 +5,7 @@ This is a build hook that allows Nix builds to be forwarded to clusters running 
 General settings:
 
 - `job-scheduler`: Which job scheduler to use, available choices are 'slurm', 'slurm-native', and 'pbs'. Default: `slurm`.
-- `system`: The system type of this cluster, jobs requiring a different system will not be routed to the scheduler. Default: `x86_64-linux`.
+- `systems`: The system types of this cluster, jobs requiring a different system will not be routed to the scheduler. Default: `x86_64-linux`.
 - `system-features`: Optional system features supported by the machines in the cluster. Can be used to force derivations to build only via nix-scheduler-hook by adding 'nsh' as a required system feature. Default: `nsh`.
 - `mandatory-system-features`: System features that the derivations must require in order to be built on the cluster. Default: (empty).
 - `store-dir`: The logical remote Nix store directory. Only change this if you know what you're doing. Default: `/nix/store`.
@@ -27,6 +27,7 @@ The current settings available for Slurm are:
 - `slurm-api-port`: Port to use for the Slurm REST API endpoint. Default: `6820`.
 - `slurm-jwt-token` (required if using Slurm): JWT token for authentication to the Slurm REST API.
 - `slurm-extra-submission-params`: Extra parameters to set in the `/job/submit` API request, as a JSON dictionary that will be merged with the 'job' value in the [`job_submit_req`](https://slurm.schedmd.com/rest_api.html#v0.0.44_job_submit_req) object. Takes precedence over parameters specified at the derivation level.
+- `slurm-system-params`: Extra parameters to set in the /job/submit API request on a per-system basis. JSON dictionary mapping systems to a dictionary that will be merged with the 'job' value. Takes precedence over `slurm-extra-submission-params`. Example: `{"x86_64-linux": {"constraints": "x86"}, "aarch64-linux": {"constraints": "arm"}}`
 
 Extra job parameters to control things like required CPU count and memory (in megabytes) can also be specified on a per-derivation basis. For Slurm, this can be set in the `extraSlurmParams` attribute of a derivation, and it functions exactly like the `slurm-extra-submission-params` setting. For example:
 

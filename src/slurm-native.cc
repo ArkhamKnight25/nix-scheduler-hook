@@ -17,7 +17,7 @@ SlurmNative::SlurmNative()
     slurm_init(ourSettings.slurmConf.get() != "" ? ourSettings.slurmConf.get().c_str() : nullptr);
 }
 
-void SlurmNative::submit(nix::StorePath drvPath)
+void SlurmNative::submit(nix::StorePath drvPath, std::string system)
 {
     auto & jobContext = contexts[drvPath];
 

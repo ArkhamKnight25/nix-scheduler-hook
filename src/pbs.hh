@@ -33,7 +33,7 @@ class PBS : public Scheduler
 public:
     PBS();
     ~PBS();
-    void submit(nix::StorePath drvPath);
+    void submit(nix::StorePath drvPath, std::string system);
     int waitForJobFinish(nix::StorePath);
 protected:
     int connHandle;

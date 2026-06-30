@@ -5,6 +5,8 @@ using namespace std::chrono_literals;
 #include <memory>
 #include <ext/stdio_filebuf.h>
 
+#include <boost/algorithm/string/join.hpp>
+
 #include <nix/main/shared.hh>
 #include <nix/main/plugin.hh>
 #include <nix/util/fmt.hh>
@@ -208,9 +210,9 @@ try {
 
     bool tryFallback = false;
 
-    if (neededSystem != ourSettings.system.get()) {
+    if (!ourSettings.systems.get().contains(neededSystem)) {
         using namespace nix;
-        printError("needed system %s does not match our system %s", neededSystem, ourSettings.system.get());
+        printError("needed system %s does not match our systems %s", neededSystem, boost::algorithm::join(ourSettings.systems.get(), ", "));
         tryFallback = true;
     }
 
@@ -274,7 +276,7 @@ try {
     std::string host;
     try {
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, "submitting build to scheduler");
-        host = scheduler->startBuild(drvPath);
+        host = scheduler->startBuild(drvPath, neededSystem);
     } catch (std::exception & e) {
         using namespace nix;
         printError("NSH Error: error when attempting to build derivation on %s: %s", ourSettings.jobScheduler.get(), e.what());

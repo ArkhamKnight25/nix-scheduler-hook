@@ -1,9 +1,3 @@
-project(
-    'nix-scheduler-hook',
-    'cpp',
-    version: '0.7.3',
-    default_options : ['cpp_std=c++23']
-)
 cmake = import('cmake')
 
 restclient_proj = cmake.subproject('restclient-cpp')

@@ -41,7 +41,7 @@ static std::shared_ptr<RestClient::Connection> getConn()
     return conn;
 }
 
-void Slurm::submit(nix::StorePath drvPath)
+void Slurm::submit(nix::StorePath drvPath, std::string system)
 {
     auto & jobContext = contexts[drvPath];
 
@@ -72,6 +72,20 @@ void Slurm::submit(nix::StorePath drvPath)
         json extraParams = json::parse(ourSettings.slurmExtraJobSubmissionParams.get());
         for (auto & [key, value] : extraParams.items()) {
             req["job"][key] = value;
+        }
+    }
+
+    if (ourSettings.slurmSystemParams.get() != "") {
+        json systemParams = json::parse(ourSettings.slurmSystemParams.get());
+        if (!systemParams.is_object())
+            throw nix::Error("invalid format for %s, expected a dictionary", ourSettings.slurmSystemParams.name);
+        if (systemParams.contains(system)) {
+            json extraParams = systemParams[system];
+            if (!extraParams.is_object())
+                throw nix::Error("invalid format for system key %s in %s, expected a dictionary", system, ourSettings.slurmSystemParams.name);
+            for (auto & [key, value] : extraParams.items()) {
+                req["job"][key] = value;
+            }
         }
     }
 

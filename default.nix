@@ -1,5 +1,6 @@
 {
-  stdenv,
+  clangStdenv,
+  lib,
   restclient-cpp,
   openpbs,
   slurm,
@@ -12,9 +13,13 @@
   pkg-config,
   nlohmann_json
 }:
-stdenv.mkDerivation {
+clangStdenv.mkDerivation {
   name = "nix-scheduler-hook";
-  src = ./src;
+  src = lib.sourceFilesBySuffices ./. [
+    "meson.build"
+    ".cc"
+    ".hh"
+  ];
 
   nativeBuildInputs = [
     meson
@@ -41,7 +46,7 @@ stdenv.mkDerivation {
 
   installPhase = ''
     mkdir -p $out/bin
-    mv nsh $out/bin
+    mv src/nsh $out/bin
     mkdir -p $out/lib
     shopt -s extglob
     mv subprojects/restclient-cpp/librestclient_cpp.so!(*p) $out/lib

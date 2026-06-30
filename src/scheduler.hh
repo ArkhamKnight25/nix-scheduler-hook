@@ -71,11 +71,11 @@ public:
     /* Submits a derivation for building and establishes an ssh connection to
      * the scheduled host.
      * @return Hostname of the node assigned to the job. */
-    std::string startBuild(nix::StorePath drvPath)
+    std::string startBuild(nix::StorePath drvPath, std::string system)
     {
         contexts[drvPath] = JobContext();
         auto & jobContext = contexts[drvPath];
-        submit(drvPath);
+        submit(drvPath, system);
         jobContext.storeUri = "ssh-ng://" + jobContext.hostname;
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, nix::fmt("connecting to '%s'", jobContext.storeUri));
         auto baseStoreConfig = nix::resolveStoreConfig(nix::StoreReference::parse(jobContext.storeUri));
@@ -87,7 +87,7 @@ public:
     }
 
     /* Submits a derivation for building. */
-    virtual void submit(nix::StorePath drvPath) = 0;
+    virtual void submit(nix::StorePath drvPath, std::string system) = 0;
 
     /* Waits for the submitted job to finish.
      * @return Exit code of job, or -1 if abnormal termination (e.g. cancelled). */

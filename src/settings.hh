@@ -20,11 +20,11 @@ struct Settings : public nix::Config
         "Which job scheduler to use, available choices are 'slurm', 'slurm-native', and 'pbs'."
     };
 
-    nix::Setting <std::string> system {
+    nix::Setting<nix::StringSet> systems {
         this,
-        "x86_64-linux",
-        "system",
-        "The system type of this cluster, jobs requiring a different system will not be routed to the scheduler."
+        {"x86_64-linux"},
+        "systems",
+        "The system types of this cluster, jobs requiring a different system will not be routed to the scheduler."
     };
 
     nix::Setting<nix::StringSet> systemFeatures {
@@ -116,6 +116,13 @@ struct Settings : public nix::Config
         {},
         "slurm-extra-submission-params",
         "Extra parameters to set in the /job/submit API request, as a JSON dictionary that will be merged with the 'job' value."
+    };
+
+    nix::Setting<std::string> slurmSystemParams {
+        this,
+        {},
+        "slurm-system-params",
+        "Extra parameters to set in the /job/submit API request on a per-system basis. JSON dictionary mapping systems to a dictionary that will be merged with the 'job' value."
     };
 
     nix::Setting<std::string> pbsHost {

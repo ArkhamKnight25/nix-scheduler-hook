@@ -13,7 +13,10 @@ let
   slurmconfig = {
     services.slurm = {
       controlMachine = "control";
-      nodeName = [ "node[1-3] CPUs=1 State=UNKNOWN" ];
+      nodeName = [
+        "node[1-2] CPUs=1 State=UNKNOWN Features=blackfeature"
+        "node3 CPUs=1 State=UNKNOWN Features=whitefeature"
+      ];
       partitionName = [ "debug Nodes=node[1-3] Default=YES MaxTime=INFINITE State=UP" ];
       extraConfig = ''
         AccountingStorageHost=dbd
@@ -102,7 +105,7 @@ in
     testScript = ''
       start_all();
       submit.succeed("mkdir -p /etc/nix")
-      submit.succeed("echo 'system = bogus' >> /etc/nix/nsh.conf")
+      submit.succeed("echo 'systems = bogus' >> /etc/nix/nsh.conf")
       submit.succeed("cat ${snakeOilPrivateKey} > ~/.ssh/privkey.snakeoil")
       submit.succeed("chmod 600 ~/.ssh/privkey.snakeoil")
       submit.succeed("echo 'Host builder' >> ~/.ssh/config")
@@ -291,7 +294,7 @@ in
           token = control.succeed("scontrol token lifespan=infinite").split('=')[1].rstrip()
           submit.succeed("echo 'slurm-state-dir = /root/nsh' > /etc/nix/nsh.conf")
           submit.succeed("echo 'slurm-jwt-token = %s' >> /etc/nix/nsh.conf" % token)
-          submit.succeed("echo 'system = %s' >> /etc/nix/nsh.conf" % "${guestSystem}")
+          submit.succeed("echo 'systems = %s' >> /etc/nix/nsh.conf" % "${guestSystem}")
 
       build_derivation_simple = """
         nix-build \
@@ -434,6 +437,19 @@ in
         t.assertIn("Hello NSH!", out)
       submit.succeed("sed -i '/submit-script/d' /etc/nix/nsh.conf")
 
+      with subtest("run_nix_build_system_params"):
+          for node in [node1, node2]:
+              node.succeed("mount -t tmpfs hide-nix ${pkgs.nix}")
+              node.fail("nix --version")
+          submit.succeed("echo 'slurm-extra-submission-params = {\"constraints\": \"blackfeature\"}' >> /etc/nix/nsh.conf")
+          submit.succeed("echo 'slurm-system-params = {\"x86_64-linux\": {\"constraints\": \"whitefeature\"}, \"aarch64-linux\": {\"constraints\": \"blackfeature\"}}' >> /etc/nix/nsh.conf")
+          submit.succeed(build_derivation_simple)
+      for node in [node1, node2]:
+          node.succeed("umount hide-nix")
+          node.succeed("nix --version")
+      submit.succeed("sed -i '/slurm-extra-submission-params/d' /etc/nix/nsh.conf")
+      submit.succeed("sed -i '/slurm-system-params/d' /etc/nix/nsh.conf")
+
       build_derivation_hello = """
         nix-build \
           --option build-hook ${nix-scheduler-hook}/bin/nsh \
@@ -506,7 +522,7 @@ in
       submit.wait_for_unit("multi-user.target")
 
       submit.succeed("mkdir -p /etc/nix")
-      submit.succeed("echo 'system = %s' >> /etc/nix/nsh.conf" % "${guestSystem}")
+      submit.succeed("echo 'systems = %s' >> /etc/nix/nsh.conf" % "${guestSystem}")
       submit.succeed("echo 'job-scheduler = pbs' >> /etc/nix/nsh.conf")
       submit.succeed("echo 'pbs-host = pbs' >> /etc/nix/nsh.conf")
 

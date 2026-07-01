@@ -1,4 +1,7 @@
+#include <cstdlib>
 #include <format>
+
+#include <nix/util/logging.hh>
 
 #include "build_remote_process.hh"
 #include "settings.hh"
@@ -126,9 +129,15 @@ NixBuildRemoteProcess::start(const BuildRequestHeader &request,
   }
 
   auto execNixBuildRemoteFull = [&]() {
+    /* Own logger for the child: its errors must reach the parent nix as
+       proper JSON log records, not raw stderr noise. */
+    nix::logger = nix::makeJSONLogger(nix::getStandardError()).release();
+
     pipe.writeSide = -1;
-    if (dup2(pipe.readSide.get(), STDIN_FILENO) == -1)
-      throw nix::Error("failed to redirect pipe to build-remote stdin");
+    if (dup2(pipe.readSide.get(), STDIN_FILENO) == -1) {
+      printError("[nsh] failed to redirect pipe to build-remote stdin");
+      std::exit(1);
+    }
 
     auto resultStandard = execNixBuildRemote();
     auto _ = execNixBuildRemoteLegacy();
@@ -138,7 +147,9 @@ NixBuildRemoteProcess::start(const BuildRequestHeader &request,
             "__build-remote` and the legacy `libexec/nix/build-remote` "
             "(error trace "
             "follows the `nix __build_remote` failure)");
-    throw resultStandard;
+    /* Don't throw out of the forked child; report and exit. */
+    printError("[nsh] %s", resultStandard.error().what());
+    std::exit(1);
   };
 
   pid_t pid;

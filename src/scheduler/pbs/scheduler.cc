@@ -49,14 +49,24 @@ static struct attropl *new_attropl()
     return new attropl{nullptr, nullptr, nullptr, nullptr, SET};
 }
 
+/* Owned copy for attropl resource/value fields: every string reachable from
+   the list must outlive pbs_submit and be freeable by free_attropl_list. */
+static char * dupString(const std::string & s)
+{
+    char * p = new char[s.size() + 1];
+    memcpy(p, s.data(), s.size());
+    p[s.size()] = '\0';
+    return p;
+}
+
 static void free_attropl_list(struct attropl *at_list)
 {
     struct attropl *cur, *tmp;
     for (cur = at_list; cur != NULL; cur = tmp) {
         if (cur->resource != nullptr)
-            delete cur->resource;
+            delete[] cur->resource;
         if (cur->value != nullptr)
-            delete cur->value;
+            delete[] cur->value;
         tmp = cur->next;
         delete cur;
     }
@@ -113,20 +123,17 @@ void PBS::submit(
         for (auto & [key, value] : pbsResources.items()) {
             /* Input-aware placement pins the host via a select resource; a
              * user-supplied node request cannot be merged with it safely. */
-            if (pinnedNode && (key == "select" || key == "nodes" || key == "host"))
+            if (pinnedNode && (key == "select" || key == "nodes" || key == "host")) {
+                free_attropl_list(aResBase);
                 throw PBSSubmitError(nix::fmt(
                     "input-aware selection chose node '%s', but pbsResources requests '%s'; "
                     "remove it from pbsResources or unset candidate-nodes",
                     *pinnedNode, key));
+            }
             auto attr = new_attropl();
             attr->name = ATTR_l;
-            attr->resource = new char[key.size() + 1];
-            strncpy(attr->resource, key.data(), key.size());
-            attr->resource[key.size()] = '\0';
-            std::string strValue(value);
-            attr->value = new char[strValue.size() + 1];
-            strncpy(attr->value, strValue.data(), strValue.size());
-            attr->value[strValue.size()] = '\0';
+            attr->resource = dupString(key);
+            attr->value = dupString(std::string(value));
             if (!aResBase)
                 aResBase = attr;
             else if (prev != nullptr)
@@ -139,9 +146,15 @@ void PBS::submit(
             auto attr = new_attropl();
             attr->name = ATTR_v;
             attr->resource = nullptr;
-            attr->value = var.data();
+            /* Owned copy: `vars` dies at the end of this block, long before
+               pbs_submit reads the list (and free_attropl_list deletes value). */
+            attr->value = dupString(var);
             attr->op = SET;
-            prev->next = attr;
+            /* pbsResources may be an empty object, leaving prev null. */
+            if (!aResBase)
+                aResBase = attr;
+            else if (prev != nullptr)
+                prev->next = attr;
             prev = attr;
         }
     }
@@ -150,12 +163,6 @@ void PBS::submit(
      * expression (Resource_List.select = 1:host=<node>), prepended to the
      * user's resource list. */
     if (pinnedNode) {
-        auto dupString = [](const std::string & s) {
-            char * p = new char[s.size() + 1];
-            memcpy(p, s.data(), s.size());
-            p[s.size()] = '\0';
-            return p;
-        };
         auto attr = new_attropl();
         attr->name = ATTR_l;
         attr->resource = dupString("select");

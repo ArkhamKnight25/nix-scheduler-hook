@@ -181,7 +181,7 @@ try {
     /* Nix probes the hook (and winds it down between builds) by closing
        our stdin; an unreadable or non-"try" request just means there is
        no more work, so exit quietly rather than declining. */
-    auto buildRequestUnvalidated = BuildRequestBuilder::readHeader(source);
+    auto buildRequestUnvalidated = BuildRequestHeader::read(source);
     if (!buildRequestUnvalidated || buildRequestUnvalidated->command != "try")
         return 0;
 
@@ -254,7 +254,7 @@ try {
         }
     }
 
-    auto buildRequest = buildRequestUnvalidated->addDerivation(store);
+    auto buildRequest = buildRequestUnvalidated->addStoreInfo(store);
     if (!buildRequest) {
         using namespace nix;
         printError("NSH Error: %s", buildRequest.error().what());

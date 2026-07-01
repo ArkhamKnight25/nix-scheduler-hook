@@ -8,15 +8,36 @@ using namespace nlohmann;
 #include <thread>
 using namespace std::chrono_literals;
 
+#include <filesystem>
+
 #include <nix/store/store-open.hh>
 #include <nix/store/store-api.hh>
 #include <nix/store/derivations.hh>
+#include <nix/util/environment-variables.hh>
 
 SlurmNative::SlurmNative()
 {
     /* See sched_util.hh: libslurm dlopens its auth/hash plugins at runtime. */
     promoteLibraryToGlobalScope("libslurm.so");
-    slurm_init(ourSettings.slurmConf.get() != "" ? ourSettings.slurmConf.get().c_str() : nullptr);
+
+    /* Check the config exists before handing it to slurm_init: libslurm
+       aborts the whole process on a missing config instead of returning an
+       error, which would skip every destructor. */
+    auto conf = ourSettings.slurmConf.get();
+    if (conf != "") {
+        if (!std::filesystem::exists(conf))
+            throw nix::Error("slurm-conf points to '%s', which does not exist", conf);
+        slurm_init(conf.c_str());
+    } else {
+        auto envConf = nix::getEnv("SLURM_CONF");
+        if (envConf.has_value() && !std::filesystem::exists(*envConf))
+            throw nix::Error("$SLURM_CONF points to '%s', which does not exist", *envConf);
+        if (!envConf.has_value() && !std::filesystem::exists("/etc/slurm/slurm.conf"))
+            throw nix::Error(
+                "failed to find a slurm config: the slurm-conf setting and $SLURM_CONF are "
+                "unset, and /etc/slurm/slurm.conf does not exist");
+        slurm_init(nullptr);
+    }
 }
 
 void SlurmNative::submit(

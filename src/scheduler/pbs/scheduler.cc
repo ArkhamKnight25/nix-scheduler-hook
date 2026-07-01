@@ -2,6 +2,7 @@
 #include "../../settings.hh"
 #include "../utils.hh"
 
+#include <cerrno>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -19,12 +20,27 @@ using namespace nlohmann;
 
 #include <pbs_error.h>
 
+/* pbs_errno stays 0 for connection-level failures that only set the system
+   errno; report whichever carries the actual cause. */
+static std::string lastPbsError(int connHandle = -1)
+{
+    if (pbs_errno != 0) {
+        if (connHandle >= 0)
+            if (auto msg = pbs_geterrmsg(connHandle); msg != nullptr && *msg != '\0')
+                return nix::fmt("%s (%d)", msg, pbs_errno);
+        return nix::fmt("PBS error %d", pbs_errno);
+    }
+    if (errno != 0)
+        return nix::fmt("%s (last system error, no PBS error was propagated)", strerror(errno));
+    return "(no error propagated)";
+}
+
 static std::string getJobState(int conn, std::string jobId)
 {
     attrl attr = {nullptr, ATTR_state, nullptr, nullptr, SET};
     batch_status *status = pbs_statjob(conn, jobId.data(), &attr, "x");
     if (status == nullptr || status->attribs == nullptr)
-        throw PBSQueryError(nix::fmt("Error querying %s for job %s: %d", ATTR_state, jobId, pbs_errno));
+        throw PBSQueryError(nix::fmt("Error querying %s for job %s: %s", ATTR_state, jobId, lastPbsError(conn)));
     std::string value = status->attribs->value;
     pbs_statfree(status);
     return value;
@@ -81,7 +97,7 @@ PBS::PBS()
     else
         connHandle = pbs_connect(nix::fmt("%s:%u", ourSettings.pbsHost.get(), ourSettings.pbsPort.get()).c_str());
     if (connHandle == -1)
-        throw PBSConnectionError(nix::fmt("Error connecting to PBS server: %d", pbs_errno));
+        throw PBSConnectionError(nix::fmt("Error connecting to PBS server: %s", lastPbsError()));
 }
 
 void PBS::submit(
@@ -185,7 +201,7 @@ void PBS::submit(
                 auto error = err_list->ecl_attrerr[0];
                 throw PBSSubmitError(nix::fmt("Error submitting PBS job: attribute %s is in error: %s", error.ecl_attribute->name, error.ecl_errmsg));
             }
-            throw PBSSubmitError(nix::fmt("Error submitting PBS job: %s", pbs_geterrmsg(connHandle)));
+            throw PBSSubmitError(nix::fmt("Error submitting PBS job: %s", lastPbsError(connHandle)));
         }
         jobContext.jobId = id;
     }
@@ -198,7 +214,7 @@ void PBS::submit(
     while (true) {
         jobdirStatus = pbs_statjob(connHandle, jobContext.jobId.data(), &jobdirAttr, nullptr);
         if (jobdirStatus == nullptr) {
-            throw PBSQueryError(nix::fmt("Error querying %s for job %s: %d", ATTR_jobdir, jobContext.jobId, pbs_errno));
+            throw PBSQueryError(nix::fmt("Error querying %s for job %s: %s", ATTR_jobdir, jobContext.jobId, lastPbsError(connHandle)));
         } else if (jobdirStatus->attribs == nullptr) {
             pbs_statfree(jobdirStatus);
             interruptibleSleep(sleepTime);
@@ -221,7 +237,7 @@ void PBS::submit(
     while (true) {
         execHostStatus = pbs_statjob(connHandle, jobContext.jobId.data(), &execHostAttr, nullptr);
         if (execHostStatus == nullptr) {
-            throw PBSQueryError(nix::fmt("Error querying %s for job %s: %d", ATTR_exechost, jobContext.jobId, pbs_errno));
+            throw PBSQueryError(nix::fmt("Error querying %s for job %s: %s", ATTR_exechost, jobContext.jobId, lastPbsError(connHandle)));
         } else if (execHostStatus->attribs == nullptr) {
             pbs_statfree(execHostStatus);
             interruptibleSleep(sleepTime);
@@ -249,7 +265,7 @@ int PBS::waitForJobFinish(nix::StorePath drvPath)
             attrl exitAttr = {nullptr, ATTR_exit_status, nullptr, nullptr, SET};
             batch_status *exitStatus = pbs_statjob(connHandle, jobContext.jobId.data(), &exitAttr, "x");
             if (exitStatus == nullptr || exitStatus->attribs == nullptr)
-                throw PBSQueryError(nix::fmt("Error querying %s for job %s: %d", ATTR_exit_status, jobContext.jobId, pbs_errno));
+                throw PBSQueryError(nix::fmt("Error querying %s for job %s: %s", ATTR_exit_status, jobContext.jobId, lastPbsError(connHandle)));
             auto value = std::atoi(exitStatus->attribs->value);
             pbs_statfree(exitStatus);
             /* The context must survive until ~Scheduler: erasing it here

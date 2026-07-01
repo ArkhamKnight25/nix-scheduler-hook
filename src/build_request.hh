@@ -47,6 +47,14 @@ public:
   /// producing the full request the schedulers consume.
   auto addDerivation(nix::ref<nix::Store> store) const
       -> std::expected<BuildRequest, nix::Error>;
+
+  // move
+  BuildRequestBuilder(BuildRequestBuilder &&) noexcept = default;
+  BuildRequestBuilder &operator=(BuildRequestBuilder &&) noexcept = default;
+
+  // copy
+  BuildRequestBuilder(const BuildRequestBuilder &) = delete;
+  BuildRequestBuilder &operator=(const BuildRequestBuilder &) = delete;
 };
 
 /* A request whose derivation path has been parsed and whose derivation has
@@ -69,4 +77,12 @@ public:
         systemFeatures{std::move(systemFeatures)},
         derivationPath{std::move(derivationPath)},
         derivation{std::move(derivation)} {}
+
+  // move
+  BuildRequest(BuildRequest &&) noexcept = default;
+  BuildRequest &operator=(BuildRequest &&) noexcept = default;
+
+  // copy
+  BuildRequest(const BuildRequest &) = delete;
+  BuildRequest &operator=(const BuildRequest &) = delete;
 };

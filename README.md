@@ -13,6 +13,8 @@ General settings:
 - `remote-nix-bin-dir`: Path to the Nix bin directory to use on the remote system. This should be a shared location on your cluster. Useful for when your cluster does not have Nix installed (see below).
 - `collect-garbage`: Run `nix-store --gc` on the `remote-store` after each job completes. Default: `false`.
 - `submit-script`: Path to a file containing the actual script submitted to the scheduler, normally you shouldn't need to change this. See the section **Modifying the Submit Script** below.
+- `ssh-port`: SSH port for connecting to the remote cluster nodes. Default: `22`.
+- `ssh-user`: SSH user for connecting to the remote cluster nodes. If unset, it will be as if the user component was not specified, falling back to the relevant SSH config.
 
 ## Supported Job Schedulers
 

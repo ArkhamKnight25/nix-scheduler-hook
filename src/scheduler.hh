@@ -76,7 +76,10 @@ public:
         contexts[drvPath] = JobContext();
         auto & jobContext = contexts[drvPath];
         submit(drvPath, system);
-        jobContext.storeUri = "ssh-ng://" + jobContext.hostname;
+        if (ourSettings.sshUser.get() != "")
+            jobContext.storeUri = nix::fmt("ssh-ng://%s@%s:%d", ourSettings.sshUser.get(), jobContext.hostname, ourSettings.sshPort.get());
+        else
+            jobContext.storeUri = nix::fmt("ssh-ng://%s:%d", jobContext.hostname, ourSettings.sshPort.get());
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, nix::fmt("connecting to '%s'", jobContext.storeUri));
         auto baseStoreConfig = nix::resolveStoreConfig(nix::StoreReference::parse(jobContext.storeUri));
         auto sshStoreConfig = std::dynamic_pointer_cast<nix::SSHStoreConfig>(baseStoreConfig.get_ptr());

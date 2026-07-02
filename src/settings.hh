@@ -76,6 +76,20 @@ struct Settings : public nix::Config
         "Path to a file containing the actual script submitted to the scheduler, normally you shouldn't need to change this."
     };
 
+    nix::Setting<unsigned> sshPort {
+        this,
+        22,
+        "ssh-port",
+        "SSH port for connecting to the remote cluster nodes."
+    };
+
+    nix::Setting<std::string> sshUser {
+        this,
+        "",
+        "ssh-user",
+        "SSH user for connecting to the remote cluster nodes."
+    };
+
     nix::Setting<std::string> slurmConf {
         this,
         "",

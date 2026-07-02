@@ -450,6 +450,16 @@ in
       submit.succeed("sed -i '/slurm-extra-submission-params/d' /etc/nix/nsh.conf")
       submit.succeed("sed -i '/slurm-system-params/d' /etc/nix/nsh.conf")
 
+      with subtest("run_nix_build_ssh_port"):
+          submit.succeed("echo 'ssh-port = 2222' >> /etc/nix/nsh.conf")
+          submit.fail(build_derivation_simple)
+      submit.succeed("sed -i '/ssh-port/d' /etc/nix/nsh.conf")
+
+      with subtest("run_nix_build_ssh_port"):
+          submit.succeed("echo 'ssh-user = nobody' >> /etc/nix/nsh.conf")
+          submit.fail(build_derivation_simple)
+      submit.succeed("sed -i '/ssh-user/d' /etc/nix/nsh.conf")
+
       build_derivation_hello = """
         nix-build \
           --option build-hook ${nix-scheduler-hook}/bin/nsh \

@@ -85,7 +85,7 @@ void SlurmNative::submit(nix::StorePath drvPath, std::string system, nix::String
             slurm_free_job_info_msg(resp);
             throw SlurmNativeError("slurm_load_job");
         } else if (resp->job_array->batch_host) {
-            jobContext.hostname = resp->job_array->batch_host;
+            jobContext.address = resp->job_array->batch_host;
             slurm_free_job_info_msg(resp);
             break;
         } else {

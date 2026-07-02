@@ -139,6 +139,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
 
     bool foundBatchHost = false;
     auto sleepTime = 50ms;
+    std::string nodeName;
     while (!foundBatchHost) {
         RestClient::Response qr = conn->get("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
         json qresp = json::parse(qr.body);
@@ -152,13 +153,27 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
             qresp["jobs"][0].contains("batch_host") &&
             qresp["jobs"][0]["batch_host"] != ""
         ) {
-            jobContext.hostname = qresp["jobs"][0]["batch_host"];
+            nodeName = qresp["jobs"][0]["batch_host"].template get<std::string>();
             foundBatchHost = true;
         } else {
             std::this_thread::sleep_for(sleepTime);
             if (sleepTime < 1s) sleepTime *= 2;
         }
     }
+
+    RestClient::Response qr = conn->get("/slurm/" + SLURM_API_VERSION + "/node/" + nodeName);
+    json qresp = json::parse(qr.body);
+    if (qresp["errors"].size() > 0) {
+        throw SlurmAPIError(nix::fmt("%s (%d): %s",
+            qresp["errors"][0]["description"],
+            qresp["errors"][0]["error_number"],
+            qresp["errors"][0]["error"]));
+    } else if (qresp["nodes"].size() == 1)
+        jobContext.address = qresp["nodes"][0]["address"].template get<std::string>();
+    else if (qresp["nodes"].size() > 1)
+        throw SlurmAPIError("too many matching nodes returned in query");
+    else
+        throw SlurmAPIError("no matching nodes returned in query");
 }
 
 static bool isLive(std::string state)

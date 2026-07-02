@@ -176,7 +176,7 @@ void PBS::submit(nix::StorePath drvPath, std::string system, nix::StringSet requ
             if (sleepTime < 1s) sleepTime *= 2;
         } else break;
     }
-    jobContext.hostname = serverStatus->attribs->value;
+    jobContext.address = serverStatus->attribs->value;
     pbs_statfree(serverStatus);
 }
 

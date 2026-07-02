@@ -20,7 +20,7 @@ class Scheduler
 public:
     struct JobContext {
         std::string jobId;
-        std::string hostname;
+        std::string address;
         std::string storeUri;
         std::string jobStderr;
         std::shared_ptr<nix::SSHMaster::Connection> cmdConn;
@@ -70,23 +70,23 @@ public:
 
     /* Submits a derivation for building and establishes an ssh connection to
      * the scheduled host.
-     * @return Hostname of the node assigned to the job. */
+     * @return Address of the node assigned to the job. */
     std::string startBuild(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures)
     {
         contexts[drvPath] = JobContext();
         auto & jobContext = contexts[drvPath];
         submit(drvPath, system, requiredFeatures);
         if (ourSettings.sshUser.get() != "")
-            jobContext.storeUri = nix::fmt("ssh-ng://%s@%s:%d", ourSettings.sshUser.get(), jobContext.hostname, ourSettings.sshPort.get());
+            jobContext.storeUri = nix::fmt("ssh-ng://%s@%s:%d", ourSettings.sshUser.get(), jobContext.address, ourSettings.sshPort.get());
         else
-            jobContext.storeUri = nix::fmt("ssh-ng://%s:%d", jobContext.hostname, ourSettings.sshPort.get());
+            jobContext.storeUri = nix::fmt("ssh-ng://%s:%d", jobContext.address, ourSettings.sshPort.get());
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, nix::fmt("connecting to '%s'", jobContext.storeUri));
         auto baseStoreConfig = nix::resolveStoreConfig(nix::StoreReference::parse(jobContext.storeUri));
         auto sshStoreConfig = std::dynamic_pointer_cast<nix::SSHStoreConfig>(baseStoreConfig.get_ptr());
         jobContext.sshMaster = std::make_shared<nix::SSHMaster>(sshStoreConfig->createSSHMaster(false));
 
         submitCalled.insert(drvPath);
-        return jobContext.hostname;
+        return jobContext.address;
     }
 
     /* Submits a derivation for building. */

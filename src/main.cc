@@ -285,7 +285,12 @@ try {
     }
     nix::Activity startedJobAct(*nix::logger, nix::lvlInfo, nix::actUnknown, nix::fmt("started job %s on %s", scheduler->getJobId(drvPath), host));
 
-    const std::string storeUri = "ssh-ng://" + host;
+    std::string storeUri;
+    if (ourSettings.sshUser.get() != "")
+        storeUri = nix::fmt("ssh-ng://%s@%s:%d", ourSettings.sshUser.get(), host, ourSettings.sshPort.get());
+    else
+        storeUri = nix::fmt("ssh-ng://%s:%d", host, ourSettings.sshPort.get());
+
     std::shared_ptr<nix::Store> sshStore;
     {
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, nix::fmt("connecting to '%s'", storeUri));

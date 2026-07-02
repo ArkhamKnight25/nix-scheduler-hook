@@ -28,10 +28,13 @@ The current settings available for Slurm are:
 - `slurm-api-host`: Hostname or address of the Slurm REST API endpoint. Default: `localhost`.
 - `slurm-api-port`: Port to use for the Slurm REST API endpoint. Default: `6820`.
 - `slurm-jwt-token` (required if using Slurm): JWT token for authentication to the Slurm REST API.
-- `slurm-extra-submission-params`: Extra parameters to set in the `/job/submit` API request, as a JSON dictionary that will be merged with the 'job' value in the [`job_submit_req`](https://slurm.schedmd.com/rest_api.html#v0.0.44_job_submit_req) object. Takes precedence over parameters specified at the derivation level.
-- `slurm-system-params`: Extra parameters to set in the /job/submit API request on a per-system basis. JSON dictionary mapping systems to a dictionary that will be merged with the 'job' value. Takes precedence over `slurm-extra-submission-params`. Example: `{"x86_64-linux": {"constraints": "x86"}, "aarch64-linux": {"constraints": "arm"}}`
+- `slurm-extra-submission-params`: Extra parameters to set in the `/job/submit` API request, as a JSON dictionary that will be merged with the 'job' value in the [`job_submit_req`](https://slurm.schedmd.com/rest_api.html#v0.0.44_job_submit_req) object.
+- `slurm-system-params`: Extra parameters to set in the /job/submit API request on a per-system basis. JSON dictionary mapping systems to a dictionary that will be merged with the 'job' value. Takes precedence over `slurm-extra-submission-params`. Example: `{"x86_64-linux": {"constraints": "x86"}, "aarch64-linux": {"constraints": "arm"}}`.
+- `slurm-feature-params`: Extra parameters to set in the /job/submit API request on a per-feature basis. JSON dictionary mapping systems to a dictionary that will be merged with the 'job' value. Takes precedence over `slurm-extra-submission-params` and `slurm-system-params`. Example: `{"gpu": {"constraints": "gpu"}}`.
 
-Extra job parameters to control things like required CPU count and memory (in megabytes) can also be specified on a per-derivation basis. For Slurm, this can be set in the `extraSlurmParams` attribute of a derivation, and it functions exactly like the `slurm-extra-submission-params` setting. For example:
+A basic merge is performed on the `-params` values, with special handling for the `constraints` string value to ensure it is also merged with `&`. JSON objects are merged recursively, top-level arrays are concatenated, and other values are overwritten according to the order of precedence.
+
+Extra job parameters to control things like required CPU count and memory (in megabytes) can also be specified on a per-derivation basis. For Slurm, this can be set in the `extraSlurmParams` attribute of a derivation, and it functions exactly like the `slurm-extra-submission-params` setting, but takes precedence over it. For example:
 
 ```nix
 runCommand "myjob" {

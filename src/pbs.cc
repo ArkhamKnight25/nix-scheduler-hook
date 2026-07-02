@@ -71,7 +71,7 @@ PBS::PBS()
         throw PBSConnectionError(nix::fmt("Error connecting to PBS server: %d", pbs_errno));
 }
 
-void PBS::submit(nix::StorePath drvPath, std::string system)
+void PBS::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures)
 {
     auto & jobContext = contexts[drvPath];
 

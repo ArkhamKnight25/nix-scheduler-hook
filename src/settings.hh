@@ -139,6 +139,13 @@ struct Settings : public nix::Config
         "Extra parameters to set in the /job/submit API request on a per-system basis. JSON dictionary mapping systems to a dictionary that will be merged with the 'job' value."
     };
 
+    nix::Setting<std::string> slurmFeatureParams {
+        this,
+        {},
+        "slurm-feature-params",
+        "Extra parameters to set in the /job/submit API request on a per-feature basis. JSON dictionary mapping systems to a dictionary that will be merged with the 'job' value."
+    };
+
     nix::Setting<std::string> pbsHost {
         this,
         "",

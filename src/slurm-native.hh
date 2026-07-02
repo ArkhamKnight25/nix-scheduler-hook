@@ -24,6 +24,6 @@ class SlurmNative : public Scheduler
 public:
     SlurmNative();
     ~SlurmNative();
-    void submit(nix::StorePath drvPath, std::string system);
+    void submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures);
     int waitForJobFinish(nix::StorePath);
 };

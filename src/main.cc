@@ -276,7 +276,7 @@ try {
     std::string host;
     try {
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, "submitting build to scheduler");
-        host = scheduler->startBuild(drvPath, neededSystem);
+        host = scheduler->startBuild(drvPath, neededSystem, requiredFeatures);
     } catch (std::exception & e) {
         using namespace nix;
         printError("NSH Error: error when attempting to build derivation on %s: %s", ourSettings.jobScheduler.get(), e.what());

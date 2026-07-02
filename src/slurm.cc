@@ -41,7 +41,7 @@ static std::shared_ptr<RestClient::Connection> getConn()
     return conn;
 }
 
-void Slurm::submit(nix::StorePath drvPath, std::string system)
+void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures)
 {
     auto & jobContext = contexts[drvPath];
 
@@ -59,20 +59,39 @@ void Slurm::submit(nix::StorePath drvPath, std::string system)
         }}
     };
 
+    // Perform a basic merge of two JSON objects, top-level arrays are
+    // concatenated, objects are recursively merged, all other values are
+    // overwritten except constraints which are specially merged.
+    auto update = [](auto & job, auto & extraParams) {
+        for (auto & [key, value] : extraParams.items()) {
+            if (job.contains(key)) {
+                if (job[key].is_array())
+                    job[key] += value;
+                else if (job[key].is_object())
+                    job[key].update(value, true);
+                else if (key == "constraints" && job[key].template get<std::string>() != "")
+                    job[key] = nix::fmt("(%s)&(%s)", job[key].template get<std::string>(), value.template get<std::string>());
+                else
+                    job[key] = value;
+            } else
+                job[key] = value;
+        }
+    };
+
+    if (ourSettings.slurmExtraJobSubmissionParams.get() != "") {
+        json extraParams = json::parse(ourSettings.slurmExtraJobSubmissionParams.get());
+        if (!extraParams.is_object())
+            throw nix::Error("invalid format for %s, expected a dictionary", ourSettings.slurmExtraJobSubmissionParams.name);
+        update(req["job"], extraParams);
+    }
+
     auto store = nix::openStore();
     auto drv = store->readDerivation(drvPath);
     if (drv.env.count("extraSlurmParams") == 1) {
         json extraParams = json::parse(drv.env["extraSlurmParams"]);
-        for (auto & [key, value] : extraParams.items()) {
-            req["job"][key] = value;
-        }
-    }
-
-    if (ourSettings.slurmExtraJobSubmissionParams.get() != "") {
-        json extraParams = json::parse(ourSettings.slurmExtraJobSubmissionParams.get());
-        for (auto & [key, value] : extraParams.items()) {
-            req["job"][key] = value;
-        }
+        if (!extraParams.is_object())
+            throw nix::Error("invalid format for extraSlurmParams, expected a dictionary");
+        update(req["job"], extraParams);
     }
 
     if (ourSettings.slurmSystemParams.get() != "") {
@@ -83,8 +102,20 @@ void Slurm::submit(nix::StorePath drvPath, std::string system)
             json extraParams = systemParams[system];
             if (!extraParams.is_object())
                 throw nix::Error("invalid format for system key %s in %s, expected a dictionary", system, ourSettings.slurmSystemParams.name);
-            for (auto & [key, value] : extraParams.items()) {
-                req["job"][key] = value;
+            update(req["job"], extraParams);
+        }
+    }
+
+    if (ourSettings.slurmFeatureParams.get() != "") {
+        json featureParams = json::parse(ourSettings.slurmFeatureParams.get());
+        if (!featureParams.is_object())
+            throw nix::Error("invalid format for %s, expected a dictionary", ourSettings.slurmFeatureParams.name);
+        for (auto & feature : requiredFeatures) {
+            if (featureParams.contains(feature)) {
+                json extraParams = featureParams[feature];
+                if (!extraParams.is_object())
+                    throw nix::Error("invalid format for feature key %s in %s, expected a dictionary", feature, ourSettings.slurmFeatureParams.name);
+                update(req["job"], extraParams);
             }
         }
     }

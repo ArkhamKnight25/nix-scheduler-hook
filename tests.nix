@@ -14,8 +14,8 @@ let
     services.slurm = {
       controlMachine = "control";
       nodeName = [
-        "node[1-2] CPUs=1 State=UNKNOWN Features=blackfeature"
-        "node3 CPUs=1 State=UNKNOWN Features=whitefeature"
+        "node[1-2] CPUs=1 State=UNKNOWN"
+        "node3 CPUs=1 State=UNKNOWN Features=foo,bar"
       ];
       partitionName = [ "debug Nodes=node[1-3] Default=YES MaxTime=INFINITE State=UP" ];
       extraConfig = ''
@@ -437,18 +437,19 @@ in
         t.assertIn("Hello NSH!", out)
       submit.succeed("sed -i '/submit-script/d' /etc/nix/nsh.conf")
 
-      with subtest("run_nix_build_system_params"):
+      with subtest("run_nix_build_system_feature_params"):
           for node in [node1, node2]:
               node.succeed("mount -t tmpfs hide-nix ${pkgs.nix}")
               node.fail("nix --version")
-          submit.succeed("echo 'slurm-extra-submission-params = {\"constraints\": \"blackfeature\"}' >> /etc/nix/nsh.conf")
-          submit.succeed("echo 'slurm-system-params = {\"x86_64-linux\": {\"constraints\": \"whitefeature\"}, \"aarch64-linux\": {\"constraints\": \"blackfeature\"}}' >> /etc/nix/nsh.conf")
+          submit.succeed("echo 'slurm-system-params = {\"x86_64-linux\": {\"constraints\": \"foo\"}, \"aarch64-linux\": {\"constraints\": \"notafeature\"}}' >> /etc/nix/nsh.conf")
+          submit.succeed("echo 'slurm-feature-params = {\"nsh\": {\"constraints\": \"bar\"}, \"notafeature\": {\"constraints\": \"notafeature\"}}' >> /etc/nix/nsh.conf")
+          submit.succeed(build_derivation_simple)
           submit.succeed(build_derivation_simple)
       for node in [node1, node2]:
           node.succeed("umount hide-nix")
           node.succeed("nix --version")
-      submit.succeed("sed -i '/slurm-extra-submission-params/d' /etc/nix/nsh.conf")
       submit.succeed("sed -i '/slurm-system-params/d' /etc/nix/nsh.conf")
+      submit.succeed("sed -i '/slurm-feature-params/d' /etc/nix/nsh.conf")
 
       with subtest("run_nix_build_ssh_port"):
           submit.succeed("echo 'ssh-port = 2222' >> /etc/nix/nsh.conf")

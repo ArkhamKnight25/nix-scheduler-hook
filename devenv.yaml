@@ -1,6 +1,5 @@
 inputs:
   nixpkgs:
-    url: github:nixos/nixpkgs
-  restclient-cpp:
-    url: github:mrtazz/restclient-cpp
-    flake: false
+    url: github:nixos/nixpkgs/b1ef643f07c065ba63d723fc59d7188119403881
+  nsh:
+    url: git+https://codeberg.org/lisanna/nix-scheduler-hook?ref=master

@@ -1,9 +1,7 @@
-{ pkgs, inputs, ... }:
+{ inputs, ... }:
 
 let
-    nsh = pkgs.callPackage ./package/default.nix {
-        restclient-cpp = inputs.restclient-cpp;
-    };
+    nsh = inputs.nsh.packages.x86_64-linux.default;
 in {
     packages = nsh.nativeBuildInputs ++ nsh.buildInputs;
 }

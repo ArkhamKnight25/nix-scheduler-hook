@@ -85,6 +85,39 @@
         "type": "github"
       }
     },
+    "nixpkgs_2": {
+      "locked": {
+        "lastModified": 1783073346,
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "72cff8a0c79efa36f529e370a2a1e48abe7b1fc9",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nsh": {
+      "inputs": {
+        "nixpkgs": "nixpkgs_2",
+        "restclient-cpp": "restclient-cpp"
+      },
+      "locked": {
+        "lastModified": 1783027161,
+        "ref": "master",
+        "rev": "8a7660f85f48640af8abfcce429687202c7a260a",
+        "revCount": 143,
+        "type": "git",
+        "url": "https://codeberg.org/lisanna/nix-scheduler-hook"
+      },
+      "original": {
+        "ref": "master",
+        "type": "git",
+        "url": "https://codeberg.org/lisanna/nix-scheduler-hook"
+      }
+    },
     "restclient-cpp": {
       "flake": false,
       "locked": {
@@ -105,10 +138,10 @@
         "devenv": "devenv",
         "git-hooks": "git-hooks",
         "nixpkgs": "nixpkgs",
+        "nsh": "nsh",
         "pre-commit-hooks": [
           "git-hooks"
-        ],
-        "restclient-cpp": "restclient-cpp"
+        ]
       }
     }
   },

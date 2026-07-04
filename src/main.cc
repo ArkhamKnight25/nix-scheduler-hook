@@ -167,6 +167,13 @@ try {
     }
     nix::verbosity = cli->verbosity;
 
+    /* When nix tears the hook down it only logs "killing process <pid>";
+       logging our pid makes that attributable to this hook instance. */
+    {
+        using namespace nix;
+        debug("[nsh] running under pid %i", (int) getpid());
+    }
+
     nix::FdSource source(STDIN_FILENO);
 
     /* Read the parent's settings. */

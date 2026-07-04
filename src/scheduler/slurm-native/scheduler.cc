@@ -8,6 +8,7 @@ using namespace nlohmann;
 #include <thread>
 using namespace std::chrono_literals;
 
+#include <cstring>
 #include <filesystem>
 
 #include <nix/store/store-open.hh>
@@ -27,7 +28,9 @@ SlurmNative::SlurmNative()
     if (conf != "") {
         if (!std::filesystem::exists(conf))
             throw nix::Error("slurm-conf points to '%s', which does not exist", conf);
-        slurm_init(conf.c_str());
+        /* strdup: libslurm keeps the pointer for lazy config reads that can
+           happen long after this constructor's locals are gone. */
+        slurm_init(strdup(conf.c_str()));
     } else {
         auto envConf = nix::getEnv("SLURM_CONF");
         if (envConf.has_value() && !std::filesystem::exists(*envConf))

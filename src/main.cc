@@ -367,7 +367,8 @@ try {
         wantedOutputs = nix::readStrings<nix::StringSet>(source);
     }
 
-    mkdir(currentLoad.c_str(), 0777);
+    if (mkdir(currentLoad.c_str(), 0777) != 0 && errno != EEXIST)
+        throw nix::SysError("creating '%s'", currentLoad.string());
 
     nix::AutoCloseFD uploadLock;
     {

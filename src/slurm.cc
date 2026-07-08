@@ -45,8 +45,8 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
 {
     auto & jobContext = contexts[drvPath];
 
-    jobContext.rootPath = ourSettings.slurmStateDir.get() + "/job-" + std::string(drvPath.to_string()) + ".root";
-    jobContext.jobStderr = ourSettings.slurmStateDir.get() + "/job-" + std::string(drvPath.to_string()) + ".stderr";
+    jobContext.rootPath = nix::fmt("%s/job-$SLURM_JOB_ID-%s.root", ourSettings.slurmStateDir.get(), std::string(drvPath.to_string()));
+    jobContext.jobStderr = nix::fmt("%s/job-%%j-%s.stderr", ourSettings.slurmStateDir.get(), std::string(drvPath.to_string()));
 
     char pathVar[] = PATH_VAR;
     json req = {
@@ -135,6 +135,8 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
     }
     int jobIdInt = response["job_id"];
     jobContext.jobId = std::to_string(jobIdInt);
+    jobContext.rootPath = nix::fmt("%s/job-%s-%s.root", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
+    jobContext.jobStderr = nix::fmt("%s/job-%s-%s.stderr", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
     unblockSignals();
 
     bool foundBatchHost = false;

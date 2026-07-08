@@ -21,8 +21,8 @@ void SlurmNative::submit(nix::StorePath drvPath, std::string system, nix::String
 {
     auto & jobContext = contexts[drvPath];
 
-    jobContext.rootPath = ourSettings.slurmStateDir.get() + "/job-" + std::string(drvPath.to_string()) + ".root";
-    jobContext.jobStderr = ourSettings.slurmStateDir.get() + "/job-" + std::string(drvPath.to_string()) + ".stderr";
+    jobContext.rootPath = nix::fmt("%s/job-$SLURM_JOB_ID-%s.root", ourSettings.slurmStateDir.get(), std::string(drvPath.to_string()));
+    jobContext.jobStderr = nix::fmt("%s/job-%%j-%s.stderr", ourSettings.slurmStateDir.get(), std::string(drvPath.to_string()));
 
     job_desc_msg_t job_desc_msg;
     slurm_init_job_desc_msg(&job_desc_msg);
@@ -74,6 +74,8 @@ void SlurmNative::submit(nix::StorePath drvPath, std::string system, nix::String
     }
     nativeJobIds[drvPath] = resp->step_id;
     jobContext.jobId = std::to_string(resp->step_id.job_id);
+    jobContext.rootPath = nix::fmt("%s/job-%s-%s.root", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
+    jobContext.jobStderr = nix::fmt("%s/job-%s-%s.stderr", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
     slurm_free_submit_response_response_msg(resp);
     unblockSignals();
 

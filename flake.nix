@@ -35,5 +35,23 @@
           nix = pkgs.nixVersions.nix_2_34;
         };
       });
+      devShells = eachDefaultSystem (pkgs: system: {
+        default = pkgs.mkShell.override { stdenv = pkgs.clangStdenv; } {
+          packages = with pkgs; [
+            clang-tools
+            meson
+            ninja
+            pkg-config
+            boost
+            curl
+            nix.libs.nix-util
+            nix.libs.nix-store
+            nix.libs.nix-main
+            nlohmann_json
+            openpbs
+            slurm
+          ];
+        };
+    });
     };
 }

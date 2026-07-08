@@ -76,6 +76,20 @@ struct Settings : public nix::Config
         "Path to a file containing the actual script submitted to the scheduler, normally you shouldn't need to change this."
     };
 
+    nix::Setting<std::string> submitEnv {
+        this,
+        "[\"PATH=/run/current-system/sw/bin/:/usr/local/bin:/usr/bin:/bin:/nix/var/nix/profiles/default/bin\"]",
+        "submit-env",
+        "JSON list of VAR=value strings representing the environment of the job."
+    };
+
+    nix::Setting<std::filesystem::path> submitDir {
+        this,
+        "/tmp",
+        "submit-dir",
+        "Working directory for the job. Only applies to the slurm schedulers."
+    };
+
     nix::Setting<unsigned> sshPort {
         this,
         22,

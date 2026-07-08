@@ -9,8 +9,6 @@
 
 #include <boost/algorithm/string/join.hpp>
 
-#define PATH_VAR "PATH=/run/current-system/sw/bin/:/usr/local/bin:/usr/bin:/bin:/nix/var/nix/profiles/default/bin"
-
 static std::string genScript(nix::StorePath drvPath, std::string rootPath)
 {
     auto nixCmdPrefix = ourSettings.remoteNixBinDir.get() != "" ? ourSettings.remoteNixBinDir.get() + "/" : "";

@@ -27,15 +27,20 @@ void SlurmNative::submit(nix::StorePath drvPath, std::string system, nix::String
     job_desc_msg_t job_desc_msg;
     slurm_init_job_desc_msg(&job_desc_msg);
 
-    char pathVar[] = PATH_VAR;
-    char *vars[] = {pathVar};
-    job_desc_msg.environment = vars;
-    job_desc_msg.env_size = 1;
+    auto vars = json::parse(ourSettings.submitEnv.get()).template get<std::vector<std::string>>();
+    job_desc_msg.environment = new char*[vars.size()];
+    Finally freeVars([&] {
+        delete[] job_desc_msg.environment;
+    });
+    for (int i = 0; i < vars.size(); ++i)
+        job_desc_msg.environment[i] = vars[i].data();
+    job_desc_msg.env_size = vars.size();
 
     auto script = genScript(drvPath, jobContext.rootPath);
     job_desc_msg.script = script.data();
 
-    job_desc_msg.work_dir = ourSettings.slurmStateDir.get().data();
+    auto submitDir = ourSettings.submitDir.get().string();
+    job_desc_msg.work_dir = submitDir.data();
 
     job_desc_msg.std_err = jobContext.jobStderr.data();
 

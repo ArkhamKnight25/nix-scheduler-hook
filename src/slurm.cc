@@ -48,12 +48,11 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
     jobContext.rootPath = nix::fmt("%s/job-$SLURM_JOB_ID-%s.root", ourSettings.slurmStateDir.get(), std::string(drvPath.to_string()));
     jobContext.jobStderr = nix::fmt("%s/job-%%j-%s.stderr", ourSettings.slurmStateDir.get(), std::string(drvPath.to_string()));
 
-    char pathVar[] = PATH_VAR;
     json req = {
         {"job", {
             {"name", "Nix Build - " + std::string(drvPath.to_string())},
-            {"current_working_directory", "/tmp"},
-            {"environment", {pathVar}},
+            {"current_working_directory", ourSettings.submitDir.get().string()},
+            {"environment", json::parse(ourSettings.submitEnv.get())},
             {"script", genScript(drvPath, jobContext.rootPath)},
             {"standard_error", jobContext.jobStderr},
         }}

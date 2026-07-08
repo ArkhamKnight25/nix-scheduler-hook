@@ -31,6 +31,8 @@ The current settings available for Slurm are:
 - `slurm-extra-submission-params`: Extra parameters to set in the `/job/submit` API request, as a JSON dictionary that will be merged with the 'job' value in the [`job_submit_req`](https://slurm.schedmd.com/rest_api.html#v0.0.44_job_submit_req) object.
 - `slurm-system-params`: Extra parameters to set in the /job/submit API request on a per-system basis. JSON dictionary mapping systems to a dictionary that will be merged with the 'job' value. Takes precedence over `slurm-extra-submission-params`. Example: `{"x86_64-linux": {"constraints": "x86"}, "aarch64-linux": {"constraints": "arm"}}`.
 - `slurm-feature-params`: Extra parameters to set in the /job/submit API request on a per-feature basis. JSON dictionary mapping systems to a dictionary that will be merged with the 'job' value. Takes precedence over `slurm-extra-submission-params` and `slurm-system-params`. Example: `{"gpu": {"constraints": "gpu"}}`.
+- `submit-env`: JSON list of VAR=value strings representing the environment of the job. Default: `[PATH=/run/current-system/sw/bin/:/usr/local/bin:/usr/bin:/bin:/nix/var/nix/profiles/default/bin]`.
+- `submit-dir`: Working directory for the job. Only applies to the slurm schedulers. Default: `/tmp`.
 
 A basic merge is performed on the `-params` values, with special handling for the `constraints` string value to ensure it is also merged with `&`. JSON objects are merged recursively, top-level arrays are concatenated, and other values are overwritten according to the order of precedence.
 

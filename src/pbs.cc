@@ -94,7 +94,7 @@ void PBS::submit(nix::StorePath drvPath, std::string system, nix::StringSet requ
     scriptOut.flush();
 
     // Attribute chain:
-    // v -> k -> N -> (l1/aResBase -> l2 -> l3 -> ...)
+    // k -> N -> (l1/aResBase -> l2 -> l3 -> ...) -> (v1 -> v2 -> v3 -> ...)
 
     auto store = nix::openStore();
     auto drv = store->readDerivation(drvPath);
@@ -119,16 +119,25 @@ void PBS::submit(nix::StorePath drvPath, std::string system, nix::StringSet requ
                 prev->next = attr;
             prev = attr;
         }
+
+        auto vars = json::parse(ourSettings.submitEnv.get()).template get<std::vector<std::string>>();
+        for (auto & var : vars) {
+            auto attr = new_attropl();
+            attr->name = ATTR_v;
+            attr->resource = nullptr;
+            attr->value = var.data();
+            attr->op = SET;
+            prev->next = attr;
+            prev = attr;
+        }
     }
 
     attropl aName = {aResBase != nullptr ? aResBase : nullptr, ATTR_N, nullptr, jobNameStr.data(), SET};
     char kfVal[] = "oe";  // Hush write-strings warning
     attropl aKeepFiles = {&aName, ATTR_k, nullptr, kfVal, SET};
-    char pathVar[] = PATH_VAR;
-    attropl aVariableList = {&aKeepFiles, ATTR_v, nullptr, pathVar, SET};
 
     blockSignals();
-    char *id = pbs_submit(connHandle, &aVariableList, scriptName, nullptr, nullptr);
+    char *id = pbs_submit(connHandle, &aKeepFiles, scriptName, nullptr, nullptr);
     free_attropl_list(aResBase);
     aName.next = nullptr;
     if (id == nullptr) {

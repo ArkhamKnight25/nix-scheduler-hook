@@ -25,10 +25,12 @@ using namespace nlohmann;
 static std::string lastPbsError(int connHandle = -1)
 {
     if (pbs_errno != 0) {
+        const char * text = pbse_to_txt(pbs_errno);
+        std::string basic = text != nullptr ? text : nix::fmt("PBS error %d", pbs_errno);
         if (connHandle >= 0)
             if (auto msg = pbs_geterrmsg(connHandle); msg != nullptr && *msg != '\0')
-                return nix::fmt("%s (%d)", msg, pbs_errno);
-        return nix::fmt("PBS error %d", pbs_errno);
+                return nix::fmt("%s (%s)", basic, msg);
+        return basic;
     }
     if (errno != 0)
         return nix::fmt("%s (last system error, no PBS error was propagated)", strerror(errno));
@@ -39,8 +41,10 @@ static std::string getJobState(int conn, std::string jobId)
 {
     attrl attr = {nullptr, ATTR_state, nullptr, nullptr, SET};
     batch_status *status = pbs_statjob(conn, jobId.data(), &attr, "x");
-    if (status == nullptr || status->attribs == nullptr)
+    if (status == nullptr || status->attribs == nullptr) {
+        pbs_statfree(status);
         throw PBSQueryError(nix::fmt("Error querying %s for job %s: %s", ATTR_state, jobId, lastPbsError(conn)));
+    }
     std::string value = status->attribs->value;
     pbs_statfree(status);
     return value;
@@ -264,8 +268,10 @@ int PBS::waitForJobFinish(nix::StorePath drvPath)
         if (state == "F") {
             attrl exitAttr = {nullptr, ATTR_exit_status, nullptr, nullptr, SET};
             batch_status *exitStatus = pbs_statjob(connHandle, jobContext.jobId.data(), &exitAttr, "x");
-            if (exitStatus == nullptr || exitStatus->attribs == nullptr)
+            if (exitStatus == nullptr || exitStatus->attribs == nullptr) {
+                pbs_statfree(exitStatus);
                 throw PBSQueryError(nix::fmt("Error querying %s for job %s: %s", ATTR_exit_status, jobContext.jobId, lastPbsError(connHandle)));
+            }
             auto value = std::atoi(exitStatus->attribs->value);
             pbs_statfree(exitStatus);
             /* The context must survive until ~Scheduler: erasing it here

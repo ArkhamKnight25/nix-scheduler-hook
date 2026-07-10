@@ -1,4 +1,4 @@
-{ pkgs, nixpkgs, nix-scheduler-hook }:
+{ pkgs, nixpkgs, nix, nix-scheduler-hook }:
 with pkgs;
 let
   testSubmitScript = writeText "submit.sh" ''
@@ -34,6 +34,10 @@ let
       "f /etc/munge/munge.key 0400 munge munge - mungeverryweakkeybuteasytointegrateinatest"
     ];
     nix.settings.substitute = false;
+    # All test nodes run the in-tree nix fork carrying the Phase-2 Builder
+    # API (also used for the build-hook tests, so both modes are exercised
+    # against the same nix).
+    nix.package = nix;
   };
   pbsConfig = {
     services.openssh.settings.PasswordAuthentication = false;
@@ -60,6 +64,11 @@ let
       snakeOilPublicKey
     ];
     nix.settings.substitute = false;
+    nix.package = nix;
+  };
+  # Build-hook invocation mode (the original model, still supported): NSH as
+  # a standalone hook binary. The plugin-mode tests below do NOT import this.
+  hookConfig = {
     nix.settings.build-hook = "${nix-scheduler-hook}/bin/nsh";
   };
   inherit (import "${nixpkgs}/nixos/tests/ssh-keys.nix" pkgs)
@@ -90,6 +99,7 @@ in
       services.openssh.enable = true;
       nix.settings.substitute = false;
       nix.settings.build-hook = "${nix-scheduler-hook}/bin/nsh";
+      nix.package = nix;
       nix.distributedBuilds= true;
       nix.buildMachines = [ {
         hostName = "builder";
@@ -106,6 +116,7 @@ in
       ];
       nix.settings.substitute = false;
       nix.settings.system-features = [ "build" ];
+      nix.package = nix;
     };
     testScript = ''
       start_all();
@@ -442,7 +453,7 @@ in
 
       with subtest("run_nix_build_static"):
           for node in [node1, node2, node3]:
-              node.succeed("mount -t tmpfs hide-nix ${pkgs.nix}")
+              node.succeed("mount -t tmpfs hide-nix ${nix}")
               node.fail("nix --version")
           submit.succeed("echo 'remote-nix-bin-dir = %s' >> /etc/nix/nsh.conf" % "${pkgs.nixStatic}/bin")
           out = submit.succeed(build_derivation_simple)
@@ -466,7 +477,7 @@ in
           # Disabled until cross slurm build is fixed, tested extensively :)
           # for node in [node1, node2, node4]:
           for node in [node1, node2]:
-              node.succeed("mount -t tmpfs hide-nix ${pkgs.nix}")
+              node.succeed("mount -t tmpfs hide-nix ${nix}")
               node.fail("nix --version")
           submit.succeed("echo 'slurm-system-params = {\"x86_64-linux\": {\"constraints\": \"foo\"}, \"aarch64-linux\": {\"constraints\": \"notafeature\"}}' >> /etc/nix/nsh.conf")
           submit.succeed("echo 'slurm-feature-params = {\"nsh\": {\"constraints\": \"bar\"}, \"notafeature\": {\"constraints\": \"notafeature\"}}' >> /etc/nix/nsh.conf")
@@ -496,7 +507,7 @@ in
       # Disabled until cross slurm build is fixed, tested extensively :)
       # with subtest("run_nix_build_arm_system_params"):
       #     for node in [node1, node2, node3]:
-      #         node.succeed("mount -t tmpfs hide-nix ${pkgs.nix}")
+      #         node.succeed("mount -t tmpfs hide-nix ${nix}")
       #         node.fail("nix --version")
       #     submit.succeed("echo 'slurm-system-params = {\"x86_64-linux\": {\"constraints\": \"x86\"}, \"aarch64-linux\": {\"constraints\": \"arm\"}}' >> /etc/nix/nsh.conf")
       #     submit.succeed(build_derivation_simple_arm)
@@ -527,12 +538,12 @@ in
     name = "Basic PBS Tests";
     interactive.sshBackdoor.enable = true;
     nodes.submit = {
-      imports = [ pbsConfig ];
+      imports = [ pbsConfig hookConfig ];
     };
     nodes.pbs = {
       security.sudo.enable = true;
       virtualisation.diskSize = 2048;
-      imports = [ pbsConfig ];
+      imports = [ pbsConfig hookConfig ];
       systemd.services.pbs = {
         path = [
           gnused
@@ -558,6 +569,9 @@ in
           ExecStart = "${openpbs}/libexec/pbs_init.d start";
           ExecReload = "${openpbs}/libexec/pbs_init.d restart";
           ExecStop = "${openpbs}/libexec/pbs_init.d stop";
+          # First-boot pbs_init.d install can exceed the default 300s on
+          # slow/nested-virt hosts.
+          TimeoutStartSec = "1800";
         };
         preStart = ''
           mkdir -p /var/spool/pbs
@@ -651,6 +665,292 @@ in
 
       with subtest("run_nix_build_hello"):
           submit.succeed(build_derivation_hello)
+    '';
+  };
+
+  /* ------------------------------------------------------------------
+   * Plugin-mode tests (new). NSH also builds as a Nix store plugin
+   * (lib/nsh.so) registering the `nsh://` store scheme. Instead of the
+   * build-hook protocol, the plugin is loaded via `plugin-files` and
+   * exposed as a build machine with `storeUri = "nsh://"`; nix's own
+   * `__build-remote` then drives NSH through the Phase-2 Builder API
+   * (`NshBuilder::buildDerivation(drvPath, drv, inputs)`).
+   *
+   * The store URL is kept bare (`nsh://`); NSH configuration keeps
+   * flowing through /etc/nix/nsh.conf, same as in hook mode.
+   * ------------------------------------------------------------------ */
+
+  pbsPluginTests = testers.nixosTest {
+    name = "PBS Plugin Tests";
+    interactive.sshBackdoor.enable = true;
+    nodes.submit = {
+      imports = [ pbsConfig ];
+      # Plugin mode: no build-hook override (nix's default __build-remote
+      # drives the offload to the nsh:// build machine).
+      nix.settings.plugin-files = "${nix-scheduler-hook}/lib/nsh.so";
+      nix.distributedBuilds = true;
+      nix.settings.builders-use-substitutes = false;
+      nix.settings.builders = lib.mkForce "@/etc/nix/machines";
+      # uri  systems  ssh-key  maxJobs  speedFactor  supported-features  mandatory-features
+      environment.etc."nix/machines".text = "nsh:// ${guestSystem} - 1 1 nsh nsh\n";
+    };
+    nodes.pbs = {
+      security.sudo.enable = true;
+      virtualisation.diskSize = 2048;
+      virtualisation.memorySize = 3072;
+      imports = [ pbsConfig ];
+      # Under slow virtualised IO postgres's initdb can exceed the default
+      # start timeout, and pbs must not start before its dataservice.
+      systemd.services.postgresql.serviceConfig.TimeoutStartSec = "900";
+      systemd.services.pbs = {
+        path = [
+          gnused
+          coreutils
+          hostname
+          getent
+          gnugrep
+          gawk
+          postgresql
+          su
+          procps
+          python3
+        ];
+        wantedBy = [ "multi-user.target" ];
+        after = [
+          "systemd-tmpfiles-clean.service"
+          "network-online.target"
+          "remote-fs.target"
+          "postgresql.target"
+        ];
+        wants = [
+          "network-online.target"
+          "postgresql.target"
+        ];
+        serviceConfig = {
+          Type = "forking";
+          ExecStart = "${openpbs}/libexec/pbs_init.d start";
+          ExecReload = "${openpbs}/libexec/pbs_init.d restart";
+          ExecStop = "${openpbs}/libexec/pbs_init.d stop";
+        };
+        preStart = ''
+          mkdir -p /var/spool/pbs
+        '';
+      };
+      services.postgresql.enable = true;
+    };
+    testScript = ''
+      start_all()
+      pbs.wait_for_unit("pbs.service")
+      pbs.succeed("qmgr -c 'set node pbs queue=workq'")
+      pbs.succeed("qmgr -c 'set node pbs resources_available.ncpus=1'")
+      pbs.succeed("qmgr -c 'set server acl_roots=root'")
+      pbs.succeed("qmgr -c 'set server flatuid=true'")
+      pbs.succeed("qmgr -c 'set server job_history_enable=true'")
+      pbs.wait_until_succeeds("pbsnodes pbs | grep 'state = free'")
+      submit.wait_for_unit("multi-user.target")
+
+      submit.succeed("mkdir -p /etc/nix")
+      submit.succeed("echo 'systems = %s' >> /etc/nix/nsh.conf" % "${guestSystem}")
+      submit.succeed("echo 'job-scheduler = pbs' >> /etc/nix/nsh.conf")
+      submit.succeed("echo 'pbs-host = pbs' >> /etc/nix/nsh.conf")
+
+      submit.succeed("mkdir -p ~/.ssh")
+      submit.succeed("cat ${snakeOilPrivateKey} > ~/.ssh/privkey.snakeoil")
+      submit.succeed("chmod 600 ~/.ssh/privkey.snakeoil")
+      submit.succeed("echo 'Host pbs' >> ~/.ssh/config")
+      submit.succeed("echo '  IdentityFile ~/.ssh/privkey.snakeoil' >> ~/.ssh/config")
+      submit.succeed("echo '  StrictHostKeyChecking no' >> ~/.ssh/config")
+
+      build_derivation_simple = """
+        nix-build \
+          -E '
+            derivation {
+              name = "test";
+              builder = "/bin/sh";
+              args = ["-c" "echo something > $out; echo something"];
+              system = builtins.currentSystem;
+              requiredSystemFeatures = [ "nsh" ];
+              REBUILD = builtins.currentTime;
+            }' 2>&1
+      """
+
+      with subtest("plugin_run_nix_build_simple"):
+          out = submit.succeed(build_derivation_simple)
+          print(out)
+          t.assertIn("something", out)
+
+      build_derivation_deps = """
+        nix-build \
+          -E '
+            let
+              mkDrv = name: echo: derivation {
+                inherit name;
+                builder = "/bin/sh";
+                args = ["-c" ("echo " + echo + " > $out; echo " + echo)];
+                system = builtins.currentSystem;
+                requiredSystemFeatures = ["nsh"];
+                REBUILD = builtins.currentTime;
+              };
+            in mkDrv "test-deps" ((mkDrv "dep1" "dep1") + (mkDrv "dep2" "dep2") + (mkDrv "dep3" "dep3"))'
+      """
+
+      with subtest("plugin_run_nix_build_deps"):
+          submit.succeed(build_derivation_deps)
+    '';
+  };
+
+  slurmPluginTests = testers.nixosTest {
+    name = "Slurm Plugin Tests";
+    interactive.sshBackdoor.enable = true;
+    nodes =
+      let
+        computeNode =
+          { ... }:
+          {
+            imports = [ slurmconfig ];
+            services.slurm.client.enable = true;
+            services.openssh.enable = true;
+            users.users.root.openssh.authorizedKeys.keys = [
+              snakeOilPublicKey
+            ];
+          };
+      in
+      {
+        control =
+          { ... }:
+          {
+            imports = [ slurmconfig ];
+            services.slurm.server.enable = true;
+            systemd.tmpfiles.rules = [
+              "f /var/spool/slurmctld/jwt_hs256.key 0400 slurm slurm - thisisjustanexamplejwttoken0000"
+            ];
+          };
+
+        dbd =
+          { pkgs, ... }:
+          let
+            passFile = pkgs.writeText "dbdpassword" "password123";
+          in
+          {
+            networking.firewall.enable = false;
+            systemd.tmpfiles.rules = [
+              "f /etc/munge/munge.key 0400 munge munge - mungeverryweakkeybuteasytointegrateinatest"
+              "d /var/spool/slurmdbd 0755 slurm slurm -"
+              "f /var/spool/slurmdbd/jwt_hs256.key 0400 slurm slurm - thisisjustanexamplejwttoken0000"
+            ];
+            services.slurm.dbdserver = {
+              enable = true;
+              storagePassFile = "${passFile}";
+              extraConfig = ''
+                AuthAltTypes=auth/jwt
+                AuthAltParameters=jwt_key=/var/spool/slurmdbd/jwt_hs256.key
+              '';
+            };
+            services.mysql = {
+              enable = true;
+              package = pkgs.mariadb;
+              initialScript = pkgs.writeText "mysql-init.sql" ''
+                CREATE USER 'slurm'@'localhost' IDENTIFIED BY 'password123';
+                GRANT ALL PRIVILEGES ON slurm_acct_db.* TO 'slurm'@'localhost';
+              '';
+              ensureDatabases = [ "slurm_acct_db" ];
+              ensureUsers = [
+                {
+                  ensurePermissions = {
+                    "slurm_acct_db.*" = "ALL PRIVILEGES";
+                  };
+                  name = "slurm";
+                }
+              ];
+            };
+          };
+
+        submit =
+          { config, ... }:
+          {
+            imports = [ slurmconfig ];
+            services.slurm.enableStools = true;
+            services.slurm.rest.enable = true;
+            virtualisation.memorySize = 4096;
+            environment.variables.SLURM_CONF = "${config.services.slurm.etcSlurm}/slurm.conf";
+            # Plugin mode.
+            nix.settings.plugin-files = "${nix-scheduler-hook}/lib/nsh.so";
+            nix.distributedBuilds = true;
+            nix.settings.builders-use-substitutes = false;
+            nix.settings.builders = lib.mkForce "@/etc/nix/machines";
+            environment.etc."nix/machines".text = "nsh:// ${guestSystem} - 1 1 nsh nsh\n";
+          };
+
+        node1 = computeNode;
+        node2 = computeNode;
+        node3 = computeNode;
+      };
+
+    testScript = ''
+      start_all()
+
+      with subtest("can_start_slurmdbd"):
+          dbd.wait_for_unit("slurmdbd.service")
+          dbd.wait_for_open_port(6819)
+
+      with subtest("cluster_is_initialized"):
+          control.wait_for_unit("multi-user.target")
+          control.wait_for_unit("slurmctld.service")
+          submit.wait_until_succeeds("sinfo | tail -n-1 | awk '{ print $1 }' | grep debug")
+
+      start_all()
+
+      with subtest("can_start_slurmd"):
+          for node in [node1, node2, node3]:
+              node.wait_for_unit("slurmd")
+
+      submit.wait_for_unit("multi-user.target")
+
+      with subtest("run_distributed_command"):
+          submit.succeed("srun hostname")
+
+      submit.wait_for_unit("slurmrestd.service")
+
+      with subtest("generate_config"):
+          token = control.succeed("scontrol token lifespan=infinite").split('=')[1].rstrip()
+          submit.succeed("echo 'slurm-state-dir = /root/nsh' > /etc/nix/nsh.conf")
+          submit.succeed("echo 'slurm-jwt-token = %s' >> /etc/nix/nsh.conf" % token)
+          submit.succeed("echo 'systems = %s' >> /etc/nix/nsh.conf" % "${guestSystem}")
+
+      submit.succeed("mkdir -p ~/.ssh")
+      submit.succeed("cat ${snakeOilPrivateKey} > ~/.ssh/privkey.snakeoil")
+      submit.succeed("chmod 600 ~/.ssh/privkey.snakeoil")
+      submit.succeed("echo 'Host node*' >> ~/.ssh/config")
+      submit.succeed("echo '  IdentityFile ~/.ssh/privkey.snakeoil' >> ~/.ssh/config")
+      submit.succeed("echo '  StrictHostKeyChecking no' >> ~/.ssh/config")
+
+      build_derivation_simple = """
+        nix-build \
+          -E '
+            derivation {
+              name = "test";
+              builder = "/bin/sh";
+              args = ["-c" "echo something > $out; echo something"];
+              system = builtins.currentSystem;
+              requiredSystemFeatures = [ "nsh" ];
+              REBUILD = builtins.currentTime;
+            }' 2>&1
+      """
+
+      with subtest("plugin_run_nix_build_simple"):
+          out = submit.succeed(build_derivation_simple)
+          print(out)
+          t.assertIn("something", out)
+
+      with subtest("plugin_run_nix_build_simple_native"):
+          submit.systemctl("stop slurmrestd.service")
+          submit.succeed("echo 'job-scheduler = slurm-native' >> /etc/nix/nsh.conf")
+          submit.succeed("echo \"slurm-conf = $SLURM_CONF\" >> /etc/nix/nsh.conf")
+          out = submit.succeed(build_derivation_simple)
+          print(out)
+          t.assertIn("something", out)
+      submit.succeed("sed -i '/job-scheduler/d' /etc/nix/nsh.conf")
+      submit.succeed("sed -i '/slurm-conf/d' /etc/nix/nsh.conf")
     '';
   };
 }

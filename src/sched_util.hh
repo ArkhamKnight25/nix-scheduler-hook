@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <csignal>
+#include <dlfcn.h>
 #include <thread>
 
 #include <nix/util/fmt.hh>
@@ -13,6 +14,21 @@
 #include <nix/store/store-api.hh>
 
 #include <boost/algorithm/string/join.hpp>
+
+/* Promote a scheduler client library to the global symbol scope.
+ *
+ * The NSH plugin is dlopen'd by nix with RTLD_LOCAL, so our library
+ * dependencies (libpbs, libslurm) live in a local namespace. Both libraries
+ * dlopen their own auth plugins at connect time (e.g. libauth_munge.so /
+ * auth_munge.so), whose undefined symbols against the parent library must
+ * resolve from the *global* scope — otherwise the auth plugin fails to load
+ * and the connection is rejected (PBS surfaces this as PBSE_BADHOST 15010).
+ * Re-dlopening the already-loaded library with RTLD_GLOBAL promotes it. */
+inline void promoteLibraryToGlobalScope(const char * soname)
+{
+    if (!dlopen(soname, RTLD_NOW | RTLD_GLOBAL | RTLD_NOLOAD))
+        dlopen(soname, RTLD_NOW | RTLD_GLOBAL);
+}
 
 inline std::string genScript(nix::StorePath drvPath, std::string rootPath, nix::StorePathSet wantedPaths)
 {

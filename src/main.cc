@@ -16,6 +16,7 @@ using namespace std::chrono_literals;
 #include <nix/store/path.hh>
 #include <nix/store/store-open.hh>
 #include <nix/store/build-result.hh>
+#include <nix/store/build-store.hh>
 #include <nix/store/ssh-store.hh>
 #include <nix/store/globals.hh>
 #include <nix/store/pathlocks.hh>
@@ -207,7 +208,9 @@ struct FallbackHookInstance
 int main(int argc, char **argv)
 {
 try {
-    nix::logger = nix::makeJSONLogger(nix::getStandardError());
+    /* makeJSONLogger returns a unique_ptr as of nix 2.35; the global logger
+     * is still a raw pointer, and the hook lives for one build only. */
+    nix::logger = nix::makeJSONLogger(nix::getStandardError()).release();
 
     /* Ensure we don't get any SSH passphrase or host key popups. */
     unsetenv("DISPLAY");
@@ -357,7 +360,7 @@ try {
     std::string host;
     try {
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, "submitting build to scheduler");
-        host = scheduler->startBuild(drvPath, neededSystem, requiredFeatures, wantedPaths);
+        host = scheduler->startBuild(drvPath, drv, neededSystem, requiredFeatures, wantedPaths);
     } catch (nix::Interrupted &) {
         throw;
     } catch (std::exception & e) {
@@ -483,7 +486,14 @@ try {
         if (trusted || drv.type().isCA()) {
             if (!drv.inputDrvs.map.empty())
                 drv.inputSrcs = store->parseStorePathSet(inputs);
-            optResult = sshStore->buildDerivation(drvPath, static_cast<const nix::BasicDerivation &>(drv));
+            /* buildDerivation lives on the Builder interface as of the
+             * Phase-2 API; ssh-ng (RemoteStore) is always a BuildStore.
+             * The inputs were already copied above, so use the plain
+             * overload rather than the inputs one. */
+            auto buildStore = std::dynamic_pointer_cast<nix::BuildStore>(sshStore);
+            if (!buildStore)
+                throw nix::Error("store '%s' does not support building", storeUri);
+            optResult = buildStore->getBuilder()->buildDerivation(drvPath, static_cast<const nix::BasicDerivation &>(drv));
             auto & result = *optResult;
             if (auto * failureP = result.tryGetFailure()) {
                 if (nix::settings.keepFailed)
@@ -619,13 +629,13 @@ try {
     }
 
     using namespace nix;
-    auto outputHashes = staticOutputHashes(*store, drv);
     std::set<Realisation> missingRealisations;
     StorePathSet missingPaths;
     if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations) && !drv.type().hasKnownOutputPaths()) {
         for (auto & outputName : wantedOutputs) {
-            auto thisOutputHash = outputHashes.at(outputName);
-            auto thisOutputId = DrvOutput{thisOutputHash, outputName};
+            /* Realisations are keyed by drv path + output name as of the
+             * 2.35 API (previously by static output hash). */
+            auto thisOutputId = DrvOutput{drvPath, outputName};
             if (!store->queryRealisation(thisOutputId)) {
                 debug("missing output %s", outputName);
                 auto r = sshStore->queryRealisation(thisOutputId);

@@ -10,6 +10,7 @@
 #include <nix/store/store-open.hh>
 #include <nix/store/ssh-store.hh>
 #include <nix/store/ssh.hh>
+#include <nix/store/derivations.hh>
 #include <nix/util/types.hh>
 #include <nix/util/logging.hh>
 #include <nix/util/signals.hh>
@@ -78,11 +79,11 @@ public:
     /* Submits a derivation for building and establishes an ssh connection to
      * the scheduled host.
      * @return Address of the node assigned to the job. */
-    std::string startBuild(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures, nix::StorePathSet wantedPaths)
+    std::string startBuild(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::string system, nix::StringSet requiredFeatures, nix::StorePathSet wantedPaths)
     {
         contexts[drvPath] = JobContext();
         auto & jobContext = contexts[drvPath];
-        submit(drvPath, system, requiredFeatures, wantedPaths);
+        submit(drvPath, drv, system, requiredFeatures, wantedPaths);
         if (ourSettings.sshUser.get() != "")
             jobContext.storeUri = nix::fmt("ssh-ng://%s@%s:%d", ourSettings.sshUser.get(), jobContext.address, ourSettings.sshPort.get());
         else
@@ -96,8 +97,10 @@ public:
         return jobContext.address;
     }
 
-    /* Submits a derivation for building. */
-    virtual void submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures, nix::StorePathSet wantedPaths) = 0;
+    /* Submits a derivation for building. `drv` is the in-memory derivation
+     * supplied by the Phase-2 Builder overload, so backends read `drv.env`
+     * directly rather than re-opening the store and reading the .drv. */
+    virtual void submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::string system, nix::StringSet requiredFeatures, nix::StorePathSet wantedPaths) = 0;
 
     /* Waits for the submitted job to finish.
      * @return Exit code of job, or -1 if abnormal termination (e.g. cancelled). */
@@ -113,7 +116,11 @@ public:
         if (!submitCalled.contains(drvPath)) throw StartBuildNotCalled();
         auto & jobContext = contexts[drvPath];
         if (!jobContext.cmdOutInit) {
-            nix::Strings tailCmd = {"tail", "-f", jobContext.jobStderr};
+            /* -F, not -f: the job's stderr file may not exist yet when we
+             * attach (e.g. PBS creates the spool file only once the job
+             * starts on the MOM); plain -f exits immediately on a missing
+             * file, silently killing log streaming for the whole build. */
+            nix::Strings tailCmd = {"tail", "-F", jobContext.jobStderr};
             jobContext.cmdConn = jobContext.sshMaster->startCommand(std::move(tailCmd));
             auto cmdOutFd = jobContext.cmdConn->out.release();
             int flags = fcntl(cmdOutFd, F_GETFL, 0);

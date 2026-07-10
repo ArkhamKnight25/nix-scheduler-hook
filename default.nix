@@ -45,9 +45,9 @@ clangStdenv.mkDerivation {
   '';
 
   installPhase = ''
-    mkdir -p $out/bin
+    mkdir -p $out/bin $out/lib
     mv src/nsh $out/bin
-    mkdir -p $out/lib
+    mv src/nsh.so $out/lib
     shopt -s extglob
     mv subprojects/restclient-cpp/librestclient_cpp.so!(*p) $out/lib
   '';

@@ -2,17 +2,47 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
-  build:
-    name: Check Nix targets
+  checks:
+    name: Nix checks (x86_64-linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check Nix flake inputs
-        uses: DeterminateSystems/flake-checker-action@main
+
+      # The VM tests and the Nix fork build need more scratch space than the
+      # ~14 GB free on a stock runner.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: false
+
+      # /dev/kvm exists on the runner but is not accessible from the Nix
+      # build sandbox by default.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
-      - name: Run nix flake check
-        run: nix flake check
+
+      # Not `nix flake check`: that would also try to realise the
+      # aarch64-linux checks, which can't build on an x86_64 runner.
+      - name: Run checks
+        run: |
+          nix build -L --keep-going --no-link \
+            .#checks.x86_64-linux.fallbackTests \
+            .#checks.x86_64-linux.pbsTests \
+            .#checks.x86_64-linux.slurmTests \
+            .#checks.x86_64-linux.pbsPluginTests \
+            .#checks.x86_64-linux.slurmPluginTests

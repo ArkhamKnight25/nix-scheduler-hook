@@ -41,7 +41,7 @@ static std::shared_ptr<RestClient::Connection> getConn()
     return conn;
 }
 
-void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures)
+void Slurm::submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::string system, nix::StringSet requiredFeatures)
 {
     auto & jobContext = contexts[drvPath];
 
@@ -85,10 +85,8 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
         update(req["job"], extraParams);
     }
 
-    auto store = nix::openStore();
-    auto drv = store->readDerivation(drvPath);
     if (drv.env.count("extraSlurmParams") == 1) {
-        json extraParams = json::parse(drv.env["extraSlurmParams"]);
+        json extraParams = json::parse(drv.env.at("extraSlurmParams"));
         if (!extraParams.is_object())
             throw nix::Error("invalid format for extraSlurmParams, expected a dictionary");
         update(req["job"], extraParams);

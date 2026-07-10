@@ -161,7 +161,9 @@ try {
     if (sigaction(SIGTERM, &act, 0))
         throw nix::SysError("assigning handler for SIGTERM");
 
-    nix::logger = nix::makeJSONLogger(nix::getStandardError());
+    /* makeJSONLogger returns a unique_ptr as of nix 2.35; the global logger
+     * is still a raw pointer, and the hook lives for one build only. */
+    nix::logger = nix::makeJSONLogger(nix::getStandardError()).release();
 
     /* Ensure we don't get any SSH passphrase or host key popups. */
     unsetenv("DISPLAY");
@@ -276,7 +278,11 @@ try {
     std::string host;
     try {
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, "submitting build to scheduler");
-        host = scheduler->startBuild(drvPath, neededSystem, requiredFeatures);
+        /* The scheduler API now takes the derivation by value (shared with
+         * the plugin's Builder path, which gets it from nix directly); in
+         * hook mode we read it from the store ourselves. */
+        auto drv = store->readDerivation(drvPath);
+        host = scheduler->startBuild(drvPath, drv, neededSystem, requiredFeatures);
     } catch (std::exception & e) {
         using namespace nix;
         printError("NSH Error: error when attempting to build derivation on %s: %s", ourSettings.jobScheduler.get(), e.what());
@@ -440,13 +446,13 @@ try {
 
     using namespace nix;
     auto drv = store->readDerivation(drvPath);
-    auto outputHashes = staticOutputHashes(*store, drv);
     std::set<Realisation> missingRealisations;
     StorePathSet missingPaths;
     if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations) && !drv.type().hasKnownOutputPaths()) {
         for (auto & outputName : wantedOutputs) {
-            auto thisOutputHash = outputHashes.at(outputName);
-            auto thisOutputId = DrvOutput{thisOutputHash, outputName};
+            /* Realisations are keyed by drv path + output name as of the
+             * 2.35 API (previously by static output hash). */
+            auto thisOutputId = DrvOutput{drvPath, outputName};
             if (!store->queryRealisation(thisOutputId)) {
                 debug("missing output %s", outputName);
                 auto r = sshStore->queryRealisation(thisOutputId);

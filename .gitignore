@@ -1,5 +1,6 @@
 /result*
 /build
+/*.log
 /*-source
 /source
 /subprojects

@@ -63,6 +63,8 @@ static void free_attropl_list(struct attropl *at_list)
 
 PBS::PBS()
 {
+    /* See sched_util.hh: libpbs dlopens libauth_munge.so at connect time. */
+    promoteLibraryToGlobalScope("libpbs.so.0");
     if (ourSettings.pbsHost.get().empty())
         connHandle = pbs_connect(nullptr);
     else
@@ -71,7 +73,7 @@ PBS::PBS()
         throw PBSConnectionError(nix::fmt("Error connecting to PBS server: %d", pbs_errno));
 }
 
-void PBS::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures)
+void PBS::submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::string system, nix::StringSet requiredFeatures)
 {
     auto & jobContext = contexts[drvPath];
 
@@ -96,12 +98,10 @@ void PBS::submit(nix::StorePath drvPath, std::string system, nix::StringSet requ
     // Attribute chain:
     // v -> k -> N -> (l1/aResBase -> l2 -> l3 -> ...)
 
-    auto store = nix::openStore();
-    auto drv = store->readDerivation(drvPath);
     std::string res = "";
     attropl *aResBase = nullptr;
     if (drv.env.count("pbsResources") == 1) {
-        json pbsResources = json::parse(drv.env["pbsResources"]);
+        json pbsResources = json::parse(drv.env.at("pbsResources"));
         attropl *prev = nullptr;
         for (auto & [key, value] : pbsResources.items()) {
             auto attr = new_attropl();

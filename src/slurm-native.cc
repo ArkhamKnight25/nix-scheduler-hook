@@ -14,10 +14,12 @@ using namespace std::chrono_literals;
 
 SlurmNative::SlurmNative()
 {
+    /* See sched_util.hh: libslurm dlopens its auth/hash plugins at runtime. */
+    promoteLibraryToGlobalScope("libslurm.so");
     slurm_init(ourSettings.slurmConf.get() != "" ? ourSettings.slurmConf.get().c_str() : nullptr);
 }
 
-void SlurmNative::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures)
+void SlurmNative::submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::string system, nix::StringSet requiredFeatures)
 {
     auto & jobContext = contexts[drvPath];
 
@@ -39,10 +41,8 @@ void SlurmNative::submit(nix::StorePath drvPath, std::string system, nix::String
 
     job_desc_msg.std_err = jobContext.jobStderr.data();
 
-    auto store = nix::openStore();
-    auto drv = store->readDerivation(drvPath);
     if (drv.env.count("slurmNativeConstraints") == 1) {
-        json extraParams = json::parse(drv.env["slurmNativeConstraints"]);
+        json extraParams = json::parse(drv.env.at("slurmNativeConstraints"));
         for (auto & [key, value] : extraParams.items()) {
             if (key == "cpus") {
                 if (value > UINT16_MAX)

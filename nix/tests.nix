@@ -291,6 +291,7 @@ in
             imports = [ slurmconfig ];
             services.slurm.client.enable = true;
             services.openssh.enable = true;
+            services.openssh.settings.PasswordAuthentication = false;
             users.users.root.openssh.authorizedKeys.keys = [
               snakeOilPublicKey
             ];
@@ -947,6 +948,7 @@ in
             imports = [ slurmconfig ];
             services.slurm.client.enable = true;
             services.openssh.enable = true;
+            services.openssh.settings.PasswordAuthentication = false;
             users.users.root.openssh.authorizedKeys.keys = [
               snakeOilPublicKey
             ];

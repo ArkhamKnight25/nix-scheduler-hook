@@ -499,16 +499,19 @@ in
       """
 
       with subtest("run_nix_build_negative_system"):
-          submit.fail(build_derivation_unsupported_system)
+          out = submit.fail(build_derivation_unsupported_system)
+          print(out)
 
       with subtest("run_nix_build_invalid_scheduler"):
           submit.succeed("echo 'job-scheduler = invalid' >> /etc/nix/nsh.conf")
-          submit.fail(build_derivation_simple)
+          out = submit.fail(build_derivation_simple)
+          print(out)
       submit.succeed("sed -i s/invalid/slurm/g /etc/nix/nsh.conf")
 
       with subtest("run_nix_build_negative_ssh"):
           submit.succeed("sed -i s/snakeoil/snake/g ~/.ssh/config")
-          submit.fail(build_derivation_simple)
+          out = submit.fail(build_derivation_simple)
+          print(out)
       submit.succeed("sed -i s/snake/snakeoil/g ~/.ssh/config")
 
       with subtest("run_nix_build_custom_store"):

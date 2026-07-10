@@ -378,15 +378,23 @@ Slurm::~Slurm()
     for (auto & [drvPath, jobContext] : contexts) {
         try {
             if (jobContext.jobId != "" &&  isLive(getJobState(jobContext.jobId))) {
+                /* Bounded retry: teardown must never spin forever on an
+                   unreachable slurmrestd. Hook mode has nix's SIGKILL as a
+                   backstop, but in plugin mode a wedged teardown would hang
+                   the whole nix process. */
+                auto deadline = std::chrono::steady_clock::now() + 1min;
                 auto sleepTime = 50ms;
                 while (true) {
                     auto resp = getConn(false)->del("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
                     if (resp.code == 200)
                         break;
-                    else {
-                        std::this_thread::sleep_for(sleepTime);
-                        if (sleepTime < 400ms) sleepTime *= 2;
+                    if (std::chrono::steady_clock::now() >= deadline) {
+                        using namespace nix;
+                        printError("NSH Error: failed to cancel job %s within one minute, giving up", jobContext.jobId);
+                        break;
                     }
+                    std::this_thread::sleep_for(sleepTime);
+                    if (sleepTime < 400ms) sleepTime *= 2;
                 }
             }
         } catch (std::exception & e) {

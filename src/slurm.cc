@@ -182,19 +182,21 @@ static bool isLive(std::string state)
     return (state == "PENDING" || state == "RUNNING");
 }
 
-static std::string getJobState(std::string jobId)
+static std::string getJobState(std::string jobId, bool useDb = false)
 {
     auto sleepTime = 50ms;
     while (true) {
-        RestClient::Response qr = getConn()->get("/slurm/" + SLURM_API_VERSION + "/job/" + jobId);
+        RestClient::Response qr = getConn()->get((useDb ? "/slurmdb/" : "/slurm/") + SLURM_API_VERSION + "/job/" + jobId);
         json qresp = json::parse(qr.body);
         if (qresp["errors"].size() > 0) {
+            if (qresp["errors"][0]["error_number"] == 2017 && !useDb)
+                return getJobState(jobId, true);
             throw SlurmAPIError(nix::fmt("%s (%d): %s",
                 qresp["errors"][0]["description"],
                 qresp["errors"][0]["error_number"],
                 qresp["errors"][0]["error"]));
         } else if (qresp["jobs"].size() == 1) {
-            return qresp["jobs"][0]["job_state"][0];
+            return useDb ? qresp["jobs"][0]["state"]["current"][0] : qresp["jobs"][0]["job_state"][0];
         } else {
             std::this_thread::sleep_for(sleepTime);
             if (sleepTime < 2s) sleepTime *= 2;
@@ -202,12 +204,14 @@ static std::string getJobState(std::string jobId)
     }
 }
 
-static uint32_t getJobReturnCode(std::string jobId)
+static uint32_t getJobReturnCode(std::string jobId, bool useDb = false)
 {
     while (true) {
-        RestClient::Response qr = getConn()->get("/slurm/" + SLURM_API_VERSION + "/job/" + jobId);
+        RestClient::Response qr = getConn()->get((useDb ? "/slurmdb/" : "/slurm/") + SLURM_API_VERSION + "/job/" + jobId);
         json qresp = json::parse(qr.body);
         if (qresp["errors"].size() > 0) {
+            if (qresp["errors"][0]["error_number"] == 2017 && !useDb)
+                return getJobReturnCode(jobId, true);
             throw SlurmAPIError(nix::fmt("%s (%d): %s",
                 qresp["errors"][0]["description"],
                 qresp["errors"][0]["error_number"],

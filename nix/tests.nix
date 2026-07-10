@@ -618,7 +618,8 @@ in
     nodes.pbs = {
       security.sudo.enable = true;
       virtualisation.diskSize = 2048;
-      imports = [ pbsConfig hookConfig ];
+      # No hookConfig: the compute node's own builds must not re-enter NSH.
+      imports = [ pbsConfig ];
       systemd.services.pbs = {
         path = [
           gnused

@@ -28,7 +28,10 @@
       checks = eachDefaultSystem (pkgs: system:
         import ./tests.nix {
           inherit nixpkgs pkgs;
-          nix = nix.packages.${system}.default;
+          # nix-cli, not default: default is nix-everything, which pulls the
+          # fork's whole test pipeline into every CI run. The VM nodes only
+          # need a runnable nix.
+          nix = nix.packages.${system}.nix-cli;
           nix-scheduler-hook = self.packages.${system}.default;
         }
       );

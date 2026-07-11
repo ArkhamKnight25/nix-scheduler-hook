@@ -453,7 +453,9 @@ in
 
       with subtest("run_nix_build_static"):
           for node in [node1, node2, node3]:
-              node.succeed("mount -t tmpfs hide-nix ${nix}")
+              # Hide the node's actual nix package (may be an overlaid fork,
+              # not pkgs.nix) so the PATH entry dangles.
+              node.succeed("mount -t tmpfs hide-nix $(dirname $(dirname $(readlink -f $(which nix))))")
               node.fail("nix --version")
           submit.succeed("echo 'remote-nix-bin-dir = %s' >> /etc/nix/nsh.conf" % "${pkgs.nixStatic}/bin")
           out = submit.succeed(build_derivation_simple)
@@ -477,7 +479,7 @@ in
           # Disabled until cross slurm build is fixed, tested extensively :)
           # for node in [node1, node2, node4]:
           for node in [node1, node2]:
-              node.succeed("mount -t tmpfs hide-nix ${nix}")
+              node.succeed("mount -t tmpfs hide-nix $(dirname $(dirname $(readlink -f $(which nix))))")
               node.fail("nix --version")
           submit.succeed("echo 'slurm-system-params = {\"x86_64-linux\": {\"constraints\": \"foo\"}, \"aarch64-linux\": {\"constraints\": \"notafeature\"}}' >> /etc/nix/nsh.conf")
           submit.succeed("echo 'slurm-feature-params = {\"nsh\": {\"constraints\": \"bar\"}, \"notafeature\": {\"constraints\": \"notafeature\"}}' >> /etc/nix/nsh.conf")
@@ -507,7 +509,7 @@ in
       # Disabled until cross slurm build is fixed, tested extensively :)
       # with subtest("run_nix_build_arm_system_params"):
       #     for node in [node1, node2, node3]:
-      #         node.succeed("mount -t tmpfs hide-nix ${nix}")
+      #         node.succeed("mount -t tmpfs hide-nix $(dirname $(dirname $(readlink -f $(which nix))))")
       #         node.fail("nix --version")
       #     submit.succeed("echo 'slurm-system-params = {\"x86_64-linux\": {\"constraints\": \"x86\"}, \"aarch64-linux\": {\"constraints\": \"arm\"}}' >> /etc/nix/nsh.conf")
       #     submit.succeed(build_derivation_simple_arm)

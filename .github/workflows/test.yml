@@ -8,7 +8,7 @@ jobs:
     name: Nix checks (x86_64-linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The VM tests and the Nix fork build need more scratch space than the
       # ~14 GB free on a stock runner.
@@ -34,12 +34,17 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
 
       # Not `nix flake check`: that would also try to realise the
       # aarch64-linux checks, which can't build on an x86_64 runner.
+      # Each scheduler test starts several QEMU guests. Running all five
+      # derivations at once can start 18 VMs and exhaust a hosted runner,
+      # causing unrelated guest boot and network failures.
       - name: Run checks
         run: |
-          nix build -L --keep-going --no-link \
+          nix build -L --keep-going --no-link --max-jobs 1 \
             .#checks.x86_64-linux.fallbackTests \
             .#checks.x86_64-linux.pbsTests \
             .#checks.x86_64-linux.slurmTests \

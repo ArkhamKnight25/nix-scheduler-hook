@@ -15,6 +15,7 @@
 #include <nix/util/logging.hh>
 
 #include "settings.hh"
+#include "node-selection.hh"
 
 class Scheduler
 {
@@ -32,35 +33,46 @@ public:
     };
 
     Scheduler() {}
+
+    /* Shared teardown: remove the job's temporary files on the node and
+     * optionally GC its store. Failures are logged per step so one broken
+     * job/file cannot skip the cleanup of the others. */
     virtual ~Scheduler()
     {
-        try {
-            for (auto & [drvPath, jobContext] : contexts) {
-                if (jobContext.sshMaster) {
-                    for (auto & file : {jobContext.rootPath, jobContext.jobStderr}) {
-                        nix::Strings rmCmd = {"rm", "-f", file};
-                        auto cmd = jobContext.sshMaster->startCommand(std::move(rmCmd));
-                        cmd->sshPid.wait();
-                    }
-                    if (ourSettings.collectGarbage.get()) {
-                        auto binDir = ourSettings.remoteNixBinDir.get();
-                        nix::Strings gcCmd = {
-                            (binDir != "" ? binDir + "/" : "") + "nix-store",
-                            "--gc",
-                            "--store",
-                            ourSettings.remoteStore.get()
-                        };
-                        auto cmd = jobContext.sshMaster->startCommand(std::move(gcCmd));
-                        if (int rc = cmd->sshPid.wait()) {
-                            using namespace nix;
-                            printError("NSH Error: garbage collection failed: %d", rc);
-                        }
-                    }
+        for (auto & [drvPath, jobContext] : contexts) {
+            if (!jobContext.sshMaster)
+                continue;
+            for (auto & file : {jobContext.rootPath, jobContext.jobStderr}) {
+                if (file.empty())
+                    continue;
+                try {
+                    nix::Strings rmCmd = {"rm", "-f", file};
+                    auto cmd = jobContext.sshMaster->startCommand(std::move(rmCmd));
+                    cmd->sshPid.wait();
+                } catch (std::exception & e) {
+                    using namespace nix;
+                    printError("NSH Error: error removing '%s' during Scheduler teardown: %s", file, e.what());
                 }
             }
-        } catch (std::exception & e) {
-            using namespace nix;
-            printError("NSH Error: error during Scheduler teardown: %s", e.what());
+            if (ourSettings.collectGarbage.get()) {
+                try {
+                    auto binDir = ourSettings.remoteNixBinDir.get();
+                    nix::Strings gcCmd = {
+                        (binDir != "" ? binDir + "/" : "") + "nix-store",
+                        "--gc",
+                        "--store",
+                        ourSettings.remoteStore.get()
+                    };
+                    auto cmd = jobContext.sshMaster->startCommand(std::move(gcCmd));
+                    if (int rc = cmd->sshPid.wait()) {
+                        using namespace nix;
+                        printError("NSH Error: garbage collection failed: %d", rc);
+                    }
+                } catch (std::exception & e) {
+                    using namespace nix;
+                    printError("NSH Error: error during Scheduler GC teardown: %s", e.what());
+                }
+            }
         }
     }
 
@@ -71,12 +83,25 @@ public:
 
     /* Submits a derivation for building and establishes an ssh connection to
      * the scheduled host.
+     *
+     * `inputs` is the build's required input closure (from the Phase-2
+     * Builder overloads). When candidate-nodes is configured, it drives
+     * input-aware placement: the job is pinned to the candidate whose store
+     * already holds the most input paths. Hook mode passes no inputs (the
+     * hook protocol only reveals them after the job is accepted), so it
+     * keeps the scheduler's normal placement.
      * @return Address of the node assigned to the job. */
-    std::string startBuild(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::string system, nix::StringSet requiredFeatures)
+    std::string startBuild(
+        nix::StorePath drvPath,
+        const nix::BasicDerivation & drv,
+        std::string system,
+        nix::StringSet requiredFeatures,
+        const nix::StorePathSet & inputs = {})
     {
         contexts[drvPath] = JobContext();
         auto & jobContext = contexts[drvPath];
-        submit(drvPath, drv, system, requiredFeatures);
+        auto pinnedNode = selectNodeForInputs(inputs);
+        submit(drvPath, drv, system, requiredFeatures, pinnedNode);
         if (ourSettings.sshUser.get() != "")
             jobContext.storeUri = nix::fmt("ssh-ng://%s@%s:%d", ourSettings.sshUser.get(), jobContext.address, ourSettings.sshPort.get());
         else
@@ -92,8 +117,16 @@ public:
 
     /* Submits a derivation for building. `drv` is the in-memory derivation
      * supplied by the Phase-2 Builder overload, so backends read `drv.env`
-     * directly rather than re-opening the store and reading the .drv. */
-    virtual void submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::string system, nix::StringSet requiredFeatures) = 0;
+     * directly rather than re-opening the store and reading the .drv.
+     * `pinnedNode`, when set, is the input-aware placement decision: the
+     * backend must request exactly that node from its scheduler (and fail
+     * loudly if user-supplied submission parameters conflict). */
+    virtual void submit(
+        nix::StorePath drvPath,
+        const nix::BasicDerivation & drv,
+        std::string system,
+        nix::StringSet requiredFeatures,
+        const std::optional<std::string> & pinnedNode) = 0;
 
     /* Waits for the submitted job to finish.
      * @return Exit code of job, or -1 if abnormal termination (e.g. cancelled). */

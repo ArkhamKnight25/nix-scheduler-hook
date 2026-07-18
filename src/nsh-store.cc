@@ -258,7 +258,9 @@ BuildResult NshBuilder::buildDerivation(
     std::string host;
     {
         Activity act(*logger, lvlTalkative, actUnknown, "submitting build to scheduler");
-        host = scheduler->startBuild(drvPath, drv, system, requiredFeatures);
+        /* The inputs drive input-aware placement (candidate-nodes) before
+         * the job is allocated; copying them happens after, in step 2. */
+        host = scheduler->startBuild(drvPath, drv, system, requiredFeatures, inputs);
     }
     trace("submitted, host=" + host + " job=" + scheduler->getJobId(drvPath));
 

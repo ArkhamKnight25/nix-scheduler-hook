@@ -15,6 +15,21 @@ General settings:
 - `submit-script`: Path to a file containing the actual script submitted to the scheduler, normally you shouldn't need to change this. See the section **Modifying the Submit Script** below.
 - `ssh-port`: SSH port for connecting to the remote cluster nodes. Default: `22`.
 - `ssh-user`: SSH user for connecting to the remote cluster nodes. If unset, it will be as if the user component was not specified, falling back to the relevant SSH config.
+- `candidate-nodes`: Ordered, whitespace-separated list of scheduler node names eligible for input-aware placement (see below). Default: (empty, disabled).
+- `node-store-addresses`: Optional JSON dictionary mapping a scheduler node name from `candidate-nodes` to the host address used to query its Nix store over SSH, for clusters where the scheduler's node name is not a resolvable address, e.g. `{"gpu01": "gpu01.cluster.internal"}`. Nodes not listed use their scheduler name as the address. Default: (empty).
+
+## Input-Aware Placement
+
+When NSH runs as a Nix store plugin (the `nsh://` store), Nix hands it the build's required input closure *before* the job is submitted. If `candidate-nodes` is set, NSH uses this to choose the compute node instead of letting the scheduler place the job blindly:
+
+1. For every node in `candidate-nodes`, NSH connects to the node's Nix store over SSH (`ssh-ng`, reusing `ssh-user`, `ssh-port`, `remote-store` and `remote-nix-bin-dir`) and asks which of the required input paths are already valid there. This happens before job allocation, so every candidate store must be queryable up front; nothing is copied at this stage.
+2. Each node is scored by the number of required input paths it already holds.
+3. The highest-scoring node wins; ties go to the node listed earliest in `candidate-nodes`. The job is then pinned to that node (Slurm REST: `required_nodes`; Slurm native: `job_desc_msg_t.req_nodes`; PBS: `Resource_List.select = 1:host=<node>`), and any inputs it is still missing are copied as usual once the job is allocated.
+4. Fallback: if `candidate-nodes` is empty, the build has no inputs, every candidate scores zero, or every candidate store is unreachable, the job is submitted without a node preference and the scheduler places it normally. A single unreachable candidate is skipped with a warning and never fails the build.
+
+The chosen node and per-node scores are logged (`NSH: input-aware scheduling: selected node ...`). A user-supplied node request in the extra submission parameters (`required_nodes` for Slurm REST, `select`/`nodes`/`host` in `pbsResources` for PBS) conflicts with input-aware placement and is rejected with an error rather than silently merged.
+
+Input-aware placement only applies in plugin mode: the legacy build-hook protocol (see **Installation**) reveals the input list only after the hook has accepted the build, so hook-mode submissions keep the scheduler's normal placement. Both modes remain supported.
 
 ## Supported Job Schedulers
 

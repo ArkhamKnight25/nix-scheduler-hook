@@ -28,6 +28,7 @@ nix_main_hdr = nix_main_dep.partial_dependency(compile_args : true, includes : t
 
 sched_sources = files(
     'settings.cc',
+    'node-selection.cc',
     'slurm.cc',
     'pbs.cc',
     'slurm-native.cc',
@@ -48,6 +49,17 @@ executable('nsh', sched_sources + files('main.cc'),
         nix_store_dep,
         nix_main_dep
     ])
+
+# Unit tests for the input-aware selection helpers (pure policy/request
+# construction; no scheduler daemons needed). Run via `meson test`.
+test_nsh = executable('test-nsh', files('test-nsh.cc', 'node-selection.cc', 'settings.cc'),
+    dependencies : [
+        json_dep,
+        nix_util_dep,
+        nix_store_dep,
+        nix_main_dep
+    ])
+test('nsh-unit', test_nsh)
 
 # Plugin mode: shared module registering the nsh:// store scheme.
 shared_module('nsh', sched_sources + files('nsh-store.cc'),

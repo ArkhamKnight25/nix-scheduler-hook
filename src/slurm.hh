@@ -27,6 +27,12 @@ class Slurm : public Scheduler
 public:
     Slurm();
     ~Slurm();
-    void submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::string system, nix::StringSet requiredFeatures, nix::StorePathSet wantedPaths);
-    int waitForJobFinish(nix::StorePath);
+    void submit(
+        nix::StorePath drvPath,
+        const nix::BasicDerivation & drv,
+        std::string system,
+        nix::StringSet requiredFeatures,
+        nix::StorePathSet wantedPaths,
+        const std::optional<std::string> & pinnedNode) override;
+    int waitForJobFinish(nix::StorePath) override;
 };

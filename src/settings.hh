@@ -188,6 +188,29 @@ struct Settings : public nix::Config
         "Extra parameters to set in the /job/submit API request on a per-feature basis. JSON dictionary mapping systems to a dictionary that will be merged with the 'job' value."
     };
 
+    nix::Setting<nix::Strings> candidateNodes {
+        this,
+        {},
+        "candidate-nodes",
+        "Ordered list of scheduler node names eligible for input-aware placement. "
+        "When set, NSH queries each node's Nix store for the build's required input "
+        "closure before submitting, and pins the job to the node that already holds "
+        "the most input paths. Earlier entries win ties. Empty (the default) "
+        "disables input-aware placement and lets the scheduler place jobs normally. "
+        "Each node's store must be reachable over SSH (see ssh-user, ssh-port, "
+        "remote-store, remote-nix-bin-dir) before the job is allocated."
+    };
+
+    nix::Setting<std::string> nodeStoreAddresses {
+        this,
+        "",
+        "node-store-addresses",
+        "Optional JSON dictionary mapping a scheduler node name (as listed in "
+        "candidate-nodes) to the host address used to query its Nix store over SSH, "
+        "for clusters where the scheduler's node name is not a resolvable address. "
+        "Nodes not listed use their scheduler name as the address."
+    };
+
     nix::Setting<std::string> pbsHost {
         this,
         "",

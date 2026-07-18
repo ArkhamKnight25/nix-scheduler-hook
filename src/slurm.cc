@@ -172,7 +172,13 @@ static void waitForJobRunning(std::string jobId)
     }
 }
 
-void Slurm::submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::string system, nix::StringSet requiredFeatures, nix::StorePathSet wantedPaths)
+void Slurm::submit(
+    nix::StorePath drvPath,
+    const nix::BasicDerivation & drv,
+    std::string system,
+    nix::StringSet requiredFeatures,
+    nix::StorePathSet wantedPaths,
+    const std::optional<std::string> & pinnedNode)
 {
     auto & jobContext = contexts[drvPath];
 
@@ -246,6 +252,19 @@ void Slurm::submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std
                 update(req["job"], extraParams);
             }
         }
+    }
+
+    /* Input-aware placement: pin the job to the selected node. Applied after
+     * all user-supplied merges so a conflicting user value cannot silently
+     * override (or be overridden by) the selection. `required_nodes` is the
+     * v0.0.43 data_parser field for job_desc req_nodes. */
+    if (pinnedNode) {
+        if (req["job"].contains("required_nodes"))
+            throw nix::Error(
+                "nix-scheduler-hook: input-aware selection chose node '%s', but 'required_nodes' is already set "
+                "by extra submission parameters; remove it from the extra params or unset candidate-nodes",
+                *pinnedNode);
+        req["job"]["required_nodes"] = json::array({*pinnedNode});
     }
 
     while (true) {

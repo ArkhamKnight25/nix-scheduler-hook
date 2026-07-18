@@ -14,9 +14,15 @@ let
     boot.loader.systemd-boot.enable = true;
     services.slurm = {
       controlMachine = "control";
+      # Ascending weights make unpinned placement deterministic (Slurm fills
+      # the lowest-weight free node first, i.e. node1). The placement tests
+      # rely on this: they pre-seed inputs on a *higher*-weight node and
+      # assert the job still lands there, which can only happen when
+      # input-aware selection pinned it.
       nodeName = [
-        "node[1-2] CPUs=1 State=UNKNOWN"
-        "node3 CPUs=1 State=UNKNOWN Features=foo,bar"
+        "node1 CPUs=1 State=UNKNOWN Weight=1"
+        "node2 CPUs=1 State=UNKNOWN Weight=10"
+        "node3 CPUs=1 State=UNKNOWN Weight=20 Features=foo,bar"
         # Disabled until cross slurm build is fixed, tested extensively :)
         # "node[1-2] CPUs=1 State=UNKNOWN Features=x86"
         # "node3 CPUs=1 State=UNKNOWN Features=x86,foo,bar"
@@ -798,6 +804,45 @@ in
 
       with subtest("plugin_run_nix_build_deps"):
           submit.succeed(build_derivation_deps)
+
+      # Input-aware pinning: the fixture has a single execution host, so
+      # placement itself is trivial; what this proves is the full PBS
+      # pinning path (store scoring over ssh-ng, Resource_List.select =
+      # 1:host=<node> accepted by the server, job runs pinned). The
+      # two-node placement proof lives in the Slurm plugin tests.
+      with subtest("plugin_input_aware_pinning"):
+          seed = submit.succeed("date +%s%N").strip()
+          input_drv = """
+            nix-build --no-out-link \
+              -E '
+                derivation {
+                  name = "pin-input";
+                  builder = "/bin/sh";
+                  args = ["-c" "echo SEED > $out"];
+                  system = builtins.currentSystem;
+                }'
+          """.replace("SEED", seed)
+          input_path = submit.succeed(input_drv).strip()
+          submit.succeed("nix-copy-closure --to pbs %s" % input_path)
+          pbs.succeed("nix-store --query --hash %s" % input_path)
+          submit.succeed("echo 'candidate-nodes = pbs' >> /etc/nix/nsh.conf")
+          pin_drv = """
+            nix-build -o /tmp/pin-result \
+              -E '
+                derivation {
+                  name = "pin-test";
+                  builder = "/bin/sh";
+                  args = ["-c" "echo built-from $input > $out"];
+                  input = builtins.storePath "INPUT";
+                  system = builtins.currentSystem;
+                  requiredSystemFeatures = [ "nsh" ];
+                }' 2>&1
+          """.replace("INPUT", input_path)
+          out = submit.succeed(pin_drv)
+          print(out)
+          t.assertIn("input-aware scheduling: selected node 'pbs'", out)
+          submit.succeed("cat /tmp/pin-result")
+      submit.succeed("sed -i '/candidate-nodes/d' /etc/nix/nsh.conf")
     '';
   };
 
@@ -953,6 +998,100 @@ in
           t.assertIn("something", out)
       submit.succeed("sed -i '/job-scheduler/d' /etc/nix/nsh.conf")
       submit.succeed("sed -i '/slurm-conf/d' /etc/nix/nsh.conf")
+      submit.systemctl("start slurmrestd.service")
+      submit.wait_for_unit("slurmrestd.service")
+
+      # ---- Input-aware placement -------------------------------------
+      # A unique input is pre-seeded on exactly one (high-weight, i.e.
+      # normally last-choice) node. The build must land on that node, and
+      # can only do so if the input closure drove the scheduling decision.
+
+      def seed_placement_input(name, node):
+          """Build a unique input locally and copy it only to `node`."""
+          seed = submit.succeed("date +%s%N").strip()
+          input_drv = """
+            nix-build --no-out-link \
+              -E '
+                derivation {
+                  name = "NAME";
+                  builder = "/bin/sh";
+                  args = ["-c" "echo SEED > $out"];
+                  system = builtins.currentSystem;
+                }'
+          """.replace("NAME", name).replace("SEED", seed)
+          input_path = submit.succeed(input_drv).strip()
+          submit.succeed("nix-copy-closure --to %s %s" % (node.name, input_path))
+          return input_path
+
+      def build_placement_drv(name, input_path, link):
+          """Offload a build depending on `input_path`; return its log."""
+          drv = """
+            nix-build -o LINK \
+              -E '
+                derivation {
+                  name = "NAME";
+                  builder = "/bin/sh";
+                  args = ["-c" "echo built-from $input > $out"];
+                  input = builtins.storePath "INPUT";
+                  system = builtins.currentSystem;
+                  requiredSystemFeatures = [ "nsh" ];
+                }' 2>&1
+          """.replace("NAME", name).replace("INPUT", input_path).replace("LINK", link)
+          return submit.succeed(drv)
+
+      def assert_built_on(link, expected, others):
+          """The output must be in the executing node's local store only."""
+          out_path = submit.succeed("readlink -f %s" % link).strip()
+          expected.succeed("nix-store --query --hash %s" % out_path)
+          for node in others:
+              node.fail("nix-store --query --hash %s" % out_path)
+
+      submit.succeed("echo 'candidate-nodes = node1 node2 node3' >> /etc/nix/nsh.conf")
+
+      with subtest("plugin_placement_control_prefers_node1"):
+          # No required inputs -> selection defers to the scheduler, whose
+          # node weights prefer node1. This baseline is what makes the
+          # node2/node3 assertions below meaningful: a scheduler that
+          # ignores inputs would put every job here.
+          control_drv = """
+            nix-build -o /tmp/placement-control \
+              -E '
+                derivation {
+                  name = "placement-control";
+                  builder = "/bin/sh";
+                  args = ["-c" "echo control > $out"];
+                  system = builtins.currentSystem;
+                  requiredSystemFeatures = [ "nsh" ];
+                  REBUILD = builtins.currentTime;
+                }' 2>&1
+          """
+          out = submit.succeed(control_drv)
+          print(out)
+          t.assertNotIn("input-aware scheduling: selected node", out)
+          assert_built_on("/tmp/placement-control", node1, [node2, node3])
+
+      with subtest("plugin_input_aware_placement_rest"):
+          input_path = seed_placement_input("placement-input-rest", node2)
+          node2.succeed("nix-store --query --hash %s" % input_path)
+          node1.fail("nix-store --query --hash %s" % input_path)
+          out = build_placement_drv("placement-test-rest", input_path, "/tmp/placement-rest")
+          print(out)
+          t.assertIn("input-aware scheduling: selected node 'node2'", out)
+          assert_built_on("/tmp/placement-rest", node2, [node1, node3])
+
+      with subtest("plugin_input_aware_placement_native"):
+          submit.succeed("echo 'job-scheduler = slurm-native' >> /etc/nix/nsh.conf")
+          submit.succeed("echo \"slurm-conf = $SLURM_CONF\" >> /etc/nix/nsh.conf")
+          input_path = seed_placement_input("placement-input-native", node3)
+          node3.succeed("nix-store --query --hash %s" % input_path)
+          node1.fail("nix-store --query --hash %s" % input_path)
+          out = build_placement_drv("placement-test-native", input_path, "/tmp/placement-native")
+          print(out)
+          t.assertIn("input-aware scheduling: selected node 'node3'", out)
+          assert_built_on("/tmp/placement-native", node3, [node1, node2])
+      submit.succeed("sed -i '/job-scheduler/d' /etc/nix/nsh.conf")
+      submit.succeed("sed -i '/slurm-conf/d' /etc/nix/nsh.conf")
+      submit.succeed("sed -i '/candidate-nodes/d' /etc/nix/nsh.conf")
     '';
   };
 }

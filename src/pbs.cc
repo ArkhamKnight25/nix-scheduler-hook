@@ -2,6 +2,7 @@
 #include "settings.hh"
 #include "sched_util.hh"
 
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <ext/stdio_filebuf.h>
@@ -73,7 +74,13 @@ PBS::PBS()
         throw PBSConnectionError(nix::fmt("Error connecting to PBS server: %d", pbs_errno));
 }
 
-void PBS::submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::string system, nix::StringSet requiredFeatures, nix::StorePathSet wantedPaths)
+void PBS::submit(
+    nix::StorePath drvPath,
+    const nix::BasicDerivation & drv,
+    std::string system,
+    nix::StringSet requiredFeatures,
+    nix::StorePathSet wantedPaths,
+    const std::optional<std::string> & pinnedNode)
 {
     auto & jobContext = contexts[drvPath];
 
@@ -104,6 +111,13 @@ void PBS::submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::
         json pbsResources = json::parse(drv.env.at("pbsResources"));
         attropl *prev = nullptr;
         for (auto & [key, value] : pbsResources.items()) {
+            /* Input-aware placement pins the host via a select resource; a
+             * user-supplied node request cannot be merged with it safely. */
+            if (pinnedNode && (key == "select" || key == "nodes" || key == "host"))
+                throw PBSSubmitError(nix::fmt(
+                    "input-aware selection chose node '%s', but pbsResources requests '%s'; "
+                    "remove it from pbsResources or unset candidate-nodes",
+                    *pinnedNode, key));
             auto attr = new_attropl();
             attr->name = ATTR_l;
             attr->resource = new char[key.size() + 1];
@@ -130,6 +144,24 @@ void PBS::submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::
             prev->next = attr;
             prev = attr;
         }
+    }
+
+    /* Input-aware placement: request the selected host with a select
+     * expression (Resource_List.select = 1:host=<node>), prepended to the
+     * user's resource list. */
+    if (pinnedNode) {
+        auto dupString = [](const std::string & s) {
+            char * p = new char[s.size() + 1];
+            memcpy(p, s.data(), s.size());
+            p[s.size()] = '\0';
+            return p;
+        };
+        auto attr = new_attropl();
+        attr->name = ATTR_l;
+        attr->resource = dupString("select");
+        attr->value = dupString(pbsSelectForHost(*pinnedNode));
+        attr->next = aResBase;
+        aResBase = attr;
     }
 
     attropl aName = {aResBase != nullptr ? aResBase : nullptr, ATTR_N, nullptr, jobNameStr.data(), SET};
@@ -203,7 +235,9 @@ int PBS::waitForJobFinish(nix::StorePath drvPath)
                 throw PBSQueryError(nix::fmt("Error querying %s for job %s: %d", ATTR_exit_status, jobContext.jobId, pbs_errno));
             auto value = std::atoi(exitStatus->attribs->value);
             pbs_statfree(exitStatus);
-            contexts.erase(drvPath);
+            /* The context must survive until ~Scheduler: erasing it here
+             * would skip the shared teardown (temp-file removal, remote GC)
+             * on the happy path. ~PBS below handles finished jobs. */
             return value;
         }
         interruptibleSleep(sleepTime);
@@ -216,9 +250,21 @@ PBS::~PBS()
     if (createdScript)
         unlink(scriptName);
 
-    for (auto & [drvPath, jobContext] : contexts)
-        if (jobContext.jobId != "")
-            pbs_deljob(connHandle, jobContext.jobId.c_str(), nullptr);
+    for (auto & [drvPath, jobContext] : contexts) {
+        if (jobContext.jobId == "")
+            continue;
+        /* Only delete jobs that are still queued/running; contexts now
+         * outlive job completion (see waitForJobFinish) so finished jobs
+         * appear here too and must not be deleted from history. */
+        try {
+            if (getJobState(connHandle, jobContext.jobId) != "F")
+                pbs_deljob(connHandle, jobContext.jobId.data(), nullptr);
+        } catch (std::exception & e) {
+            /* State query failed; attempt the delete anyway (an unknown or
+             * finished job makes it a harmless no-op error). */
+            pbs_deljob(connHandle, jobContext.jobId.data(), nullptr);
+        }
+    }
 
     pbs_disconnect(connHandle);
 }

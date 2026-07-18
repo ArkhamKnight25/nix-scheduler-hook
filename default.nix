@@ -39,6 +39,8 @@ clangStdenv.mkDerivation {
     slurm
   ];
 
+  doCheck = true;
+
   postUnpack = ''
     mkdir $sourceRoot/subprojects
     cp -r ${restclient-cpp} $sourceRoot/subprojects/restclient-cpp

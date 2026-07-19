@@ -205,21 +205,31 @@ void PBS::submit(
     jobContext.jobStderr = nix::fmt("%s/%s.e%s", jobDir, jobNameStr, jobIdNum);
     jobContext.rootPath = nix::fmt("%s/%s.root", jobDir, jobNameStr);
 
-    attrl serverAttr = {nullptr, ATTR_server, nullptr, nullptr, SET};
+    /* The PBS server and execution host are commonly different machines.
+     * Input transfer, log streaming, and output retrieval must use the MOM
+     * where the job actually runs, not the host running pbs_server. */
+    attrl execHostAttr = {nullptr, ATTR_exechost, nullptr, nullptr, SET};
     sleepTime = 50ms;
-    batch_status *serverStatus;
+    batch_status *execHostStatus;
     while (true) {
-        serverStatus = pbs_statjob(connHandle, jobContext.jobId.data(), &serverAttr, nullptr);
-        if (serverStatus == nullptr) {
-            throw PBSQueryError(nix::fmt("Error querying %s for job %s: %d", ATTR_server, jobContext.jobId, pbs_errno));
-        } else if (serverStatus->attribs == nullptr) {
-            pbs_statfree(serverStatus);
+        execHostStatus = pbs_statjob(connHandle, jobContext.jobId.data(), &execHostAttr, nullptr);
+        if (execHostStatus == nullptr) {
+            throw PBSQueryError(nix::fmt("Error querying %s for job %s: %d", ATTR_exechost, jobContext.jobId, pbs_errno));
+        } else if (execHostStatus->attribs == nullptr) {
+            pbs_statfree(execHostStatus);
             interruptibleSleep(sleepTime);
             if (sleepTime < 1s) sleepTime *= 2;
         } else break;
     }
-    jobContext.address = serverStatus->attribs->value;
-    pbs_statfree(serverStatus);
+    std::string execHost = execHostStatus->attribs->value;
+    pbs_statfree(execHostStatus);
+
+    /* exec_host is a '+'-separated allocation such as
+     * "node2/0+node2/1". The batch script runs on its first host. */
+    auto hostEnd = execHost.find_first_of("/+");
+    jobContext.address = execHost.substr(0, hostEnd);
+    if (jobContext.address.empty())
+        throw PBSQueryError(nix::fmt("PBS returned an invalid %s value for job %s: '%s'", ATTR_exechost, jobContext.jobId, execHost));
 }
 
 int PBS::waitForJobFinish(nix::StorePath drvPath)

@@ -72,6 +72,73 @@ let
     nix.settings.substitute = false;
     nix.package = nix;
   };
+  mkPbsRoleConfig =
+    {
+      startServer ? false,
+      startSched ? false,
+      startComm ? false,
+      startMom ? false,
+    }:
+    {
+      imports = [ pbsConfig ];
+      environment.etc."pbs.conf".text = lib.mkForce ''
+        PBS_EXEC=${openpbs}
+        PBS_SERVER=pbs
+        PBS_START_SERVER=${if startServer then "1" else "0"}
+        PBS_START_SCHED=${if startSched then "1" else "0"}
+        PBS_START_COMM=${if startComm then "1" else "0"}
+        PBS_START_MOM=${if startMom then "1" else "0"}
+        PBS_HOME=/var/spool/pbs
+        PBS_CORE_LIMIT=unlimited
+        PBS_SUPPORTED_AUTH_METHODS=munge
+        PBS_AUTH_METHOD=MUNGE
+      '';
+    };
+  pbsClientConfig = mkPbsRoleConfig { };
+  pbsServerConfig = mkPbsRoleConfig {
+    startServer = true;
+    startSched = true;
+    startComm = true;
+  };
+  pbsMomConfig = mkPbsRoleConfig {
+    startMom = true;
+  };
+  pbsMomNode =
+    { ... }:
+    {
+      imports = [ pbsMomConfig ];
+      virtualisation.diskSize = 2048;
+      virtualisation.memorySize = 1536;
+      systemd.services.pbs = {
+        path = [
+          gnused
+          coreutils
+          hostname
+          getent
+          gnugrep
+          gawk
+          su
+          procps
+          python3
+        ];
+        wantedBy = [ "multi-user.target" ];
+        after = [
+          "systemd-tmpfiles-clean.service"
+          "network-online.target"
+          "remote-fs.target"
+        ];
+        wants = [ "network-online.target" ];
+        serviceConfig = {
+          Type = "forking";
+          ExecStart = "${openpbs}/libexec/pbs_init.d start";
+          ExecReload = "${openpbs}/libexec/pbs_init.d restart";
+          ExecStop = "${openpbs}/libexec/pbs_init.d stop";
+        };
+        preStart = ''
+          mkdir -p /var/spool/pbs
+        '';
+      };
+    };
   # Build-hook invocation mode (the original model, still supported): NSH as
   # a standalone hook binary. The plugin-mode tests below do NOT import this.
   hookConfig = {
@@ -692,7 +759,7 @@ in
     name = "PBS Plugin Tests";
     interactive.sshBackdoor.enable = true;
     nodes.submit = {
-      imports = [ pbsConfig ];
+      imports = [ pbsClientConfig ];
       # Plugin mode: no build-hook override (nix's default __build-remote
       # drives the offload to the nsh:// build machine).
       nix.settings.plugin-files = "${nix-scheduler-hook}/lib/nsh.so";
@@ -706,7 +773,7 @@ in
       security.sudo.enable = true;
       virtualisation.diskSize = 2048;
       virtualisation.memorySize = 3072;
-      imports = [ pbsConfig ];
+      imports = [ pbsServerConfig ];
       # Under slow virtualised IO postgres's initdb can exceed the default
       # start timeout, and pbs must not start before its dataservice.
       systemd.services.postgresql.serviceConfig.TimeoutStartSec = "900";
@@ -746,15 +813,25 @@ in
       };
       services.postgresql.enable = true;
     };
+    nodes.pbsnode1 = pbsMomNode;
+    nodes.pbsnode2 = pbsMomNode;
     testScript = ''
       start_all()
       pbs.wait_for_unit("pbs.service")
-      pbs.succeed("qmgr -c 'set node pbs queue=workq'")
-      pbs.succeed("qmgr -c 'set node pbs resources_available.ncpus=1'")
+      pbsnode1.wait_for_unit("pbs.service")
+      pbsnode2.wait_for_unit("pbs.service")
       pbs.succeed("qmgr -c 'set server acl_roots=root'")
       pbs.succeed("qmgr -c 'set server flatuid=true'")
       pbs.succeed("qmgr -c 'set server job_history_enable=true'")
-      pbs.wait_until_succeeds("pbsnodes pbs | grep 'state = free'")
+      for node_name in ("pbsnode1", "pbsnode2"):
+          pbs.succeed("qmgr -c 'create node %s'" % node_name)
+          pbs.succeed("qmgr -c 'set node %s queue=workq'" % node_name)
+          pbs.succeed(
+              "qmgr -c 'set node %s resources_available.ncpus=1'" % node_name
+          )
+          pbs.wait_until_succeeds(
+              "pbsnodes %s | grep 'state = free'" % node_name
+          )
       submit.wait_for_unit("multi-user.target")
 
       submit.succeed("mkdir -p /etc/nix")
@@ -765,7 +842,7 @@ in
       submit.succeed("mkdir -p ~/.ssh")
       submit.succeed("cat ${snakeOilPrivateKey} > ~/.ssh/privkey.snakeoil")
       submit.succeed("chmod 600 ~/.ssh/privkey.snakeoil")
-      submit.succeed("echo 'Host pbs' >> ~/.ssh/config")
+      submit.succeed("echo 'Host pbsnode*' >> ~/.ssh/config")
       submit.succeed("echo '  IdentityFile ~/.ssh/privkey.snakeoil' >> ~/.ssh/config")
       submit.succeed("echo '  StrictHostKeyChecking no' >> ~/.ssh/config")
 
@@ -805,12 +882,10 @@ in
       with subtest("plugin_run_nix_build_deps"):
           submit.succeed(build_derivation_deps)
 
-      # Input-aware pinning: the fixture has a single execution host, so
-      # placement itself is trivial; what this proves is the full PBS
-      # pinning path (store scoring over ssh-ng, Resource_List.select =
-      # 1:host=<node> accepted by the server, job runs pinned). The
-      # two-node placement proof lives in the Slurm plugin tests.
-      with subtest("plugin_input_aware_pinning"):
+      # Keep node 2 busy after seeding the input there. A pinned job waits for
+      # node 2; an unpinned job runs immediately on node 1. The node-local
+      # stores make the final placement directly observable.
+      with subtest("plugin_input_aware_placement"):
           seed = submit.succeed("date +%s%N").strip()
           input_drv = """
             nix-build --no-out-link \
@@ -823,9 +898,20 @@ in
                 }'
           """.replace("SEED", seed)
           input_path = submit.succeed(input_drv).strip()
-          submit.succeed("nix-copy-closure --to pbs %s" % input_path)
-          pbs.succeed("nix-store --query --hash %s" % input_path)
-          submit.succeed("echo 'candidate-nodes = pbs' >> /etc/nix/nsh.conf")
+          submit.succeed("nix-copy-closure --to pbsnode2 %s" % input_path)
+          pbsnode2.succeed("nix-store --query --hash %s" % input_path)
+          pbsnode1.fail("nix-store --query --hash %s" % input_path)
+          pbs.fail("nix-store --query --hash %s" % input_path)
+          submit.succeed(
+              "echo 'candidate-nodes = pbsnode1 pbsnode2' >> /etc/nix/nsh.conf"
+          )
+          blocker = pbs.succeed(
+              "printf '#!/bin/sh\\nexec ${coreutils}/bin/sleep 60\\n' "
+              "| qsub -l select=1:ncpus=1:host=pbsnode2"
+          ).strip()
+          pbs.wait_until_succeeds(
+              "qstat -f %s | grep -q 'job_state = R'" % blocker
+          )
           pin_drv = """
             nix-build -o /tmp/pin-result \
               -E '
@@ -840,8 +926,11 @@ in
           """.replace("INPUT", input_path)
           out = submit.succeed(pin_drv)
           print(out)
-          t.assertIn("input-aware scheduling: selected node 'pbs'", out)
-          submit.succeed("cat /tmp/pin-result")
+          t.assertIn("input-aware scheduling: selected node 'pbsnode2'", out)
+          out_path = submit.succeed("readlink -f /tmp/pin-result").strip()
+          pbsnode2.succeed("nix-store --query --hash %s" % out_path)
+          pbsnode1.fail("nix-store --query --hash %s" % out_path)
+          pbs.fail("nix-store --query --hash %s" % out_path)
       submit.succeed("sed -i '/candidate-nodes/d' /etc/nix/nsh.conf")
     '';
   };

@@ -19,7 +19,12 @@ SlurmNative::SlurmNative()
     slurm_init(ourSettings.slurmConf.get() != "" ? ourSettings.slurmConf.get().c_str() : nullptr);
 }
 
-void SlurmNative::submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::string system, nix::StringSet requiredFeatures)
+void SlurmNative::submit(
+    nix::StorePath drvPath,
+    const nix::BasicDerivation & drv,
+    std::string system,
+    nix::StringSet requiredFeatures,
+    const std::optional<std::string> & pinnedNode)
 {
     auto & jobContext = contexts[drvPath];
 
@@ -40,6 +45,14 @@ void SlurmNative::submit(nix::StorePath drvPath, const nix::BasicDerivation & dr
     job_desc_msg.work_dir = ourSettings.slurmStateDir.get().data();
 
     job_desc_msg.std_err = jobContext.jobStderr.data();
+
+    /* Input-aware placement: req_nodes is libslurm's comma-separated list of
+     * required nodes (slurm.h job_desc_msg_t). Must outlive the submit call. */
+    std::string pinnedNodeStr;
+    if (pinnedNode) {
+        pinnedNodeStr = *pinnedNode;
+        job_desc_msg.req_nodes = pinnedNodeStr.data();
+    }
 
     if (drv.env.count("slurmNativeConstraints") == 1) {
         json extraParams = json::parse(drv.env.at("slurmNativeConstraints"));

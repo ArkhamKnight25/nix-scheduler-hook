@@ -33,8 +33,13 @@ class PBS : public Scheduler
 public:
     PBS();
     ~PBS();
-    void submit(nix::StorePath drvPath, const nix::BasicDerivation & drv, std::string system, nix::StringSet requiredFeatures);
-    int waitForJobFinish(nix::StorePath);
+    void submit(
+        nix::StorePath drvPath,
+        const nix::BasicDerivation & drv,
+        std::string system,
+        nix::StringSet requiredFeatures,
+        const std::optional<std::string> & pinnedNode) override;
+    int waitForJobFinish(nix::StorePath) override;
 protected:
     int connHandle;
     char scriptName[MAXPATHLEN + 1];

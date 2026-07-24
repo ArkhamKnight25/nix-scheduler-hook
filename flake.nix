@@ -41,6 +41,7 @@
             clang-tools
             meson
             ninja
+            cmake
             pkg-config
             boost
             curl

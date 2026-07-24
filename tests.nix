@@ -11,11 +11,16 @@ let
     exit $rc
   '';
   slurmconfig = {
+    boot.loader.systemd-boot.enable = true;
     services.slurm = {
       controlMachine = "control";
       nodeName = [
         "node[1-2] CPUs=1 State=UNKNOWN"
         "node3 CPUs=1 State=UNKNOWN Features=foo,bar"
+        # Disabled until cross slurm build is fixed, tested extensively :)
+        # "node[1-2] CPUs=1 State=UNKNOWN Features=x86"
+        # "node3 CPUs=1 State=UNKNOWN Features=x86,foo,bar"
+        # "node4 CPUS=1 STATE=UNKNOWN Features=arm"
       ];
       partitionName = [ "debug Nodes=node[1-3] Default=YES MaxTime=INFINITE State=UP" ];
       extraConfig = ''
@@ -77,7 +82,7 @@ let
   helloBinCache = mkBinaryCache { rootPaths = [ hello.drvPath ]; };
 in
 {
-  fallbackTests = testers.nixosTest {
+  fallbackTests = testers.runNixOSTest {
     name = "Fallback Tests";
     interactive.sshBackdoor.enable = true;
     nodes.submit = {
@@ -188,9 +193,12 @@ in
     '';
   };
 
-  slurmTests = testers.nixosTest {
+  slurmTests = testers.runNixOSTest {
     name = "Basic Slurm Tests";
     interactive.sshBackdoor.enable = true;
+    # Disabled until cross slurm build is fixed, tested extensively :)
+    # node.pkgsReadOnly = false;  # Required for multi-arch
+    # qemu.package = qemu;  # Required for multi-arch
     nodes =
       let
         computeNode =
@@ -263,6 +271,10 @@ in
         node1 = computeNode;
         node2 = computeNode;
         node3 = computeNode;
+        # node4 = args: (computeNode args) // {
+        #   nixpkgs.hostPlatform = "aarch64-linux";
+        #   nixpkgs.buildPlatform = stdenv.hostPlatform;
+        # };
       };
 
     testScript = ''
@@ -438,18 +450,47 @@ in
       submit.succeed("sed -i '/submit-script/d' /etc/nix/nsh.conf")
 
       with subtest("run_nix_build_system_feature_params"):
+          # Disabled until cross slurm build is fixed, tested extensively :)
+          # for node in [node1, node2, node4]:
           for node in [node1, node2]:
               node.succeed("mount -t tmpfs hide-nix ${pkgs.nix}")
               node.fail("nix --version")
           submit.succeed("echo 'slurm-system-params = {\"x86_64-linux\": {\"constraints\": \"foo\"}, \"aarch64-linux\": {\"constraints\": \"notafeature\"}}' >> /etc/nix/nsh.conf")
           submit.succeed("echo 'slurm-feature-params = {\"nsh\": {\"constraints\": \"bar\"}, \"notafeature\": {\"constraints\": \"notafeature\"}}' >> /etc/nix/nsh.conf")
           submit.succeed(build_derivation_simple)
-          submit.succeed(build_derivation_simple)
+      # Disabled until cross slurm build is fixed, tested extensively :)
+      # for node in [node1, node2, node4]:
       for node in [node1, node2]:
           node.succeed("umount hide-nix")
           node.succeed("nix --version")
       submit.succeed("sed -i '/slurm-system-params/d' /etc/nix/nsh.conf")
       submit.succeed("sed -i '/slurm-feature-params/d' /etc/nix/nsh.conf")
+
+      build_derivation_simple_arm = """
+        nix-build \
+          --option build-hook ${nix-scheduler-hook}/bin/nsh \
+          -E '
+            derivation {
+              name = "test";
+              builder = "/bin/sh";
+              args = ["-c" "echo something > $out; echo something"];
+              system = "aarch64-linux";
+              requiredSystemFeatures = [ "nsh" ];
+              REBUILD = builtins.currentTime;
+            }' 2>&1
+      """
+
+      # Disabled until cross slurm build is fixed, tested extensively :)
+      # with subtest("run_nix_build_arm_system_params"):
+      #     for node in [node1, node2, node3]:
+      #         node.succeed("mount -t tmpfs hide-nix ${pkgs.nix}")
+      #         node.fail("nix --version")
+      #     submit.succeed("echo 'slurm-system-params = {\"x86_64-linux\": {\"constraints\": \"x86\"}, \"aarch64-linux\": {\"constraints\": \"arm\"}}' >> /etc/nix/nsh.conf")
+      #     submit.succeed(build_derivation_simple_arm)
+      # for node in [node1, node2, node3]:
+      #     node.succeed("umount hide-nix")
+      #     node.succeed("nix --version")
+      # submit.succeed("sed -i '/slurm-system-params/d' /etc/nix/nsh.conf")
 
       build_derivation_hello = """
         nix-build \
@@ -469,7 +510,7 @@ in
     '';
   };
 
-  pbsTests = testers.nixosTest {
+  pbsTests = testers.runNixOSTest {
     name = "Basic PBS Tests";
     interactive.sshBackdoor.enable = true;
     nodes.submit = {

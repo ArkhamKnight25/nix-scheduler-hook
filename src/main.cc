@@ -3,7 +3,9 @@
 #include <thread>
 using namespace std::chrono_literals;
 #include <memory>
-#include <ext/stdio_filebuf.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <unistd.h>
 
 #include <boost/algorithm/string/join.hpp>
 
@@ -58,6 +60,56 @@ static void sigHandler(int signo)
        (job cancellation etc.) run. */
     nix::setInterrupted(true);
 }
+
+/* Streambuf that writes the build log to Nix on fd 4. Once Nix has decided
+   to tear the hook down it stops draining this pipe while it waits for us
+   to exit (SIGKILL after 20s), so writes must never block indefinitely:
+   fd 4 is made O_NONBLOCK, and once `abend` is set and the pipe has stayed
+   full for ~1s, the remaining log data is dropped. */
+struct LogPipeBuf : std::streambuf
+{
+    explicit LogPipeBuf(std::atomic<bool> & abend) : abend(abend) {}
+
+    std::streamsize xsputn(const char * s, std::streamsize n) override
+    {
+        if (dropping)
+            return n;
+        std::streamsize written = 0;
+        while (written < n) {
+            ssize_t res = write(4, s + written, n - written);
+            if (res > 0) {
+                written += res;
+                stalls = 0;
+            } else if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                struct pollfd pfd = {.fd = 4, .events = POLLOUT, .revents = 0};
+                if (poll(&pfd, 1, 100) > 0)
+                    stalls = 0;
+                else if (abend && ++stalls >= 10) {
+                    dropping = true;
+                    break;
+                }
+            } else if (res == -1 && errno != EINTR) {
+                dropping = true;
+                break;
+            }
+        }
+        /* Report success even when dropping, so the stream stays usable. */
+        return n;
+    }
+
+    int_type overflow(int_type c) override
+    {
+        if (c != traits_type::eof()) {
+            char ch = traits_type::to_char_type(c);
+            xsputn(&ch, 1);
+        }
+        return c;
+    }
+
+    std::atomic<bool> & abend;
+    int stalls = 0;
+    bool dropping = false;
+};
 
 std::filesystem::path getBuildRemoteFromNixBin(std::filesystem::path nixBin)
 {
@@ -413,7 +465,8 @@ try {
 
             // The invoking Nix process listens on fd 4 for the build log
             // See https://github.com/NixOS/nix/blob/master/src/libstore/unix/build/hook-instance.cc#L61
-            __gnu_cxx::stdio_filebuf<char> logBuf(4, std::ios::out);
+            fcntl(4, F_SETFL, fcntl(4, F_GETFL, 0) | O_NONBLOCK);
+            LogPipeBuf logBuf(cmdAbend);
             std::ostream logOs(&logBuf);
 
             bool gotTerminator = false;
@@ -430,10 +483,7 @@ try {
                     cmdOutIs->clear();
                 }
             }
-            /* Skip the drain when interrupted: during SIGTERM teardown Nix
-               no longer reads fd 4, so writing to a full pipe would block
-               past its SIGKILL deadline. */
-            if (cmdAbend && !nix::getInterrupted()) {
+            if (cmdAbend) {
                 // Drain in the case of abnormal termination
                 std::string data;
                 char c;

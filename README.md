@@ -15,6 +15,7 @@ General settings:
 - `submit-script`: Path to a file containing the actual script submitted to the scheduler, normally you shouldn't need to change this. See the section **Modifying the Submit Script** below.
 - `ssh-port`: SSH port for connecting to the remote cluster nodes. Default: `22`.
 - `ssh-user`: SSH user for connecting to the remote cluster nodes. If unset, it will be as if the user component was not specified, falling back to the relevant SSH config.
+- `early-accept`: Accept the build before submitting the job, allows submission of more than one pending job at once at the cost of losing the ability to retry. Default: `false`.
 
 ## Supported Job Schedulers
 

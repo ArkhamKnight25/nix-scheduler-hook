@@ -345,6 +345,13 @@ in
           print(out)
           t.assertIn("something", out)
 
+      with subtest("run_nix_build_simple_early_accept"):
+          submit.succeed("echo 'early-accept = true' >> /etc/nix/nsh.conf")
+          out = submit.succeed(build_derivation_simple)
+          print(out)
+          t.assertIn("something", out)
+      submit.succeed("sed -i '/early-accept/d' /etc/nix/nsh.conf")
+
       build_derivation_deps = """
         nix-build \
           --option build-hook ${nix-scheduler-hook}/bin/nsh \

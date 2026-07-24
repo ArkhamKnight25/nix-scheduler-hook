@@ -273,15 +273,24 @@ try {
         return 0;
     }
 
+    if (ourSettings.earlyAccept.get())
+        std::cerr << "# accept\n" << ourSettings.jobScheduler.get() << "\n";
+
     std::string host;
     try {
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, "submitting build to scheduler");
         host = scheduler->startBuild(drvPath, neededSystem, requiredFeatures);
     } catch (std::exception & e) {
-        using namespace nix;
-        printError("NSH Error: error when attempting to build derivation on %s: %s", ourSettings.jobScheduler.get(), e.what());
-        std::cerr << "# decline-permanently\n";
-        return 0;
+        auto errorMsg = nix::fmt("NSH Error: error when attempting to build derivation on %s: %s", ourSettings.jobScheduler.get(), e.what());
+        if (ourSettings.earlyAccept.get()) {
+            // We can't decline because we already accepted, throw an exception
+            throw nix::Error(errorMsg);
+        } else {
+            using namespace nix;
+            printError(errorMsg);
+            std::cerr << "# decline-permanently\n";
+            return 0;
+        }
     }
     nix::Activity startedJobAct(*nix::logger, nix::lvlInfo, nix::actUnknown, nix::fmt("started job %s on %s", scheduler->getJobId(drvPath), host));
 
@@ -302,14 +311,21 @@ try {
             sshStore->connect();
         } catch (std::exception & e) {
             auto msg = nix::chomp(nix::drainFD(5, {.block = false}));
-            using namespace nix;
-            printError("NSH Error: cannot build on '%s': %s%s", storeUri, e.what(), msg.empty() ? "" : ": " + msg);
-            std::cerr << "# decline\n";
-            return 0;
+            auto errorMsg = nix::fmt("NSH Error: cannot build on '%s': %s%s", storeUri, e.what(), msg.empty() ? "" : ": " + msg);
+            if (ourSettings.earlyAccept.get()) {
+                // We can't decline because we already accepted, throw an exception
+                throw nix::Error(errorMsg);
+            } else {
+                using namespace nix;
+                printError(errorMsg);
+                std::cerr << "# decline\n";
+                return 0;
+            }
         }
     }
 
-    std::cerr << "# accept\n" << storeUri << "\n";
+    if (!ourSettings.earlyAccept.get())
+        std::cerr << "# accept\n" << storeUri << "\n";
 
     auto inputs = nix::readStrings<nix::StringSet>(source);
     auto wantedOutputs = nix::readStrings<nix::StringSet>(source);

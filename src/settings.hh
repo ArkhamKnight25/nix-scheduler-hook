@@ -104,6 +104,13 @@ struct Settings : public nix::Config
         "SSH user for connecting to the remote cluster nodes."
     };
 
+    nix::Setting<bool> earlyAccept {
+        this,
+        false,
+        "early-accept",
+        "Accept the build before submitting the job, allows submission of more than one pending job at once at the cost of losing the ability to retry."
+    };
+
     nix::Setting<std::string> slurmConf {
         this,
         "",

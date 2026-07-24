@@ -67,27 +67,28 @@ void SlurmNative::submit(nix::StorePath drvPath, std::string system, nix::String
         }
     }
 
-    submit_response_msg_t *resp;
-    blockSignals();
-    if (slurm_submit_batch_job(&job_desc_msg, &resp)) {
+    {
+        SignalBlocker blockTerm;
+        submit_response_msg_t *resp;
+        if (slurm_submit_batch_job(&job_desc_msg, &resp)) {
+            slurm_free_submit_response_response_msg(resp);
+            throw SlurmNativeError("slurm_submit_batch_job");
+        } else if (resp->error_code) {
+            auto errorCode = resp->error_code;
+            slurm_free_submit_response_response_msg(resp);
+            throw SlurmNativeError(slurm_strerror(errorCode));
+        }
+        nativeJobIds[drvPath] = resp->step_id;
+        jobContext.jobId = std::to_string(resp->step_id.job_id);
+        jobContext.rootPath = nix::fmt("%s/job-%s-%s.root", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
+        jobContext.jobStderr = nix::fmt("%s/job-%s-%s.stderr", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
         slurm_free_submit_response_response_msg(resp);
-        throw SlurmNativeError("slurm_submit_batch_job");
-    } else if (resp->error_code) {
-        auto errorCode = resp->error_code;
-        slurm_free_submit_response_response_msg(resp);
-        throw SlurmNativeError(slurm_strerror(errorCode));
     }
-    nativeJobIds[drvPath] = resp->step_id;
-    jobContext.jobId = std::to_string(resp->step_id.job_id);
-    jobContext.rootPath = nix::fmt("%s/job-%s-%s.root", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
-    jobContext.jobStderr = nix::fmt("%s/job-%s-%s.stderr", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
-    slurm_free_submit_response_response_msg(resp);
-    unblockSignals();
 
     bool foundBatchHost = false;
     auto sleepTime = 50ms;
     while (!foundBatchHost) {
-        job_info_msg_t *resp;
+        job_info_msg_t *resp = nullptr;
         if (slurm_load_job(&resp, nativeJobIds[drvPath], 0) || resp->record_count != 1) {
             slurm_free_job_info_msg(resp);
             throw SlurmNativeError("slurm_load_job");
@@ -97,7 +98,7 @@ void SlurmNative::submit(nix::StorePath drvPath, std::string system, nix::String
             break;
         } else {
             slurm_free_job_info_msg(resp);
-            std::this_thread::sleep_for(sleepTime);
+            interruptibleSleep(sleepTime);
             if (sleepTime < 1s) sleepTime *= 2;
         }
     }
@@ -111,7 +112,7 @@ static bool isLive(job_states state)
 static job_states getJobState(slurm_step_id_t jobId)
 {
     slurm_selected_step_t jobs = {nullptr, NO_VAL, NO_VAL, jobId };
-    job_state_response_msg_t *resp;
+    job_state_response_msg_t *resp = nullptr;
     if (slurm_load_job_state(1, &jobs, &resp) || resp->jobs_count != 1) {
         slurm_free_job_state_response_msg(resp);
         throw SlurmNativeError("slurm_load_job_state");
@@ -124,7 +125,7 @@ static job_states getJobState(slurm_step_id_t jobId)
 
 static uint32_t getJobReturnCode(slurm_step_id_t jobId)
 {
-    job_info_msg_t *resp;
+    job_info_msg_t *resp = nullptr;
     if (slurm_load_job(&resp, jobId, 0) || resp->record_count != 1) {
         slurm_free_job_info_msg(resp);
         throw SlurmNativeError("slurm_load_job");
@@ -149,7 +150,7 @@ int SlurmNative::waitForJobFinish(nix::StorePath drvPath)
             } else
                 return getJobReturnCode(nativeJobId);
         } else {
-            std::this_thread::sleep_for(sleepTime);
+            interruptibleSleep(sleepTime);
             if (sleepTime < 1s) sleepTime *= 2;
         }
     }
@@ -158,11 +159,18 @@ int SlurmNative::waitForJobFinish(nix::StorePath drvPath)
 SlurmNative::~SlurmNative()
 {
     for (auto & [drvPath, nativeJobId] : nativeJobIds) {
-        if (isLive(getJobState(nativeJobId))) {
-            if (slurm_kill_job(nativeJobId, SIGTERM, 0) && isLive(getJobState(nativeJobId))) {
-                using namespace nix;
-                printError("error killing job %" PRIu32 ": %s", nativeJobId.job_id, slurm_strerror(errno));
+        /* An exception escaping a destructor calls std::terminate(); one
+           failed query must not abort teardown of the remaining jobs. */
+        try {
+            if (isLive(getJobState(nativeJobId))) {
+                if (slurm_kill_job(nativeJobId, SIGTERM, 0) && isLive(getJobState(nativeJobId))) {
+                    using namespace nix;
+                    printError("error killing job %" PRIu32 ": %s", nativeJobId.job_id, slurm_strerror(errno));
+                }
             }
+        } catch (std::exception & e) {
+            using namespace nix;
+            printError("NSH Error: error during SlurmNative teardown: %s", e.what());
         }
     }
 

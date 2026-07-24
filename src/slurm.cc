@@ -36,6 +36,9 @@ static std::shared_ptr<RestClient::Connection> getConn()
         headers["X-SLURM-USER-TOKEN"] = ourSettings.slurmJwtToken.get();
         headers["Content-Type"] = "application/json";
         conn->SetHeaders(headers);
+        /* Bound every REST call: a wedged slurmrestd must not be able to
+           pin us past Nix's 20s SIGTERM-to-SIGKILL teardown window. */
+        conn->SetTimeout(10);
         init = true;
     }
     return conn;
@@ -120,23 +123,24 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
     }
 
     auto conn = getConn();
-    blockSignals();
-    RestClient::Response r = conn->post("/slurm/" + SLURM_API_VERSION + "/job/submit", req.dump());
-    if (r.body == "Authentication failure") {
-        throw SlurmAuthenticationError(r.body);
+    {
+        SignalBlocker blockTerm;
+        RestClient::Response r = conn->post("/slurm/" + SLURM_API_VERSION + "/job/submit", req.dump());
+        if (r.body == "Authentication failure") {
+            throw SlurmAuthenticationError(r.body);
+        }
+        json response = json::parse(r.body);
+        if (response["errors"].size() > 0) {
+            throw SlurmAPIError(nix::fmt("%s (%d): %s",
+                response["errors"][0]["description"],
+                response["errors"][0]["error_number"],
+                response["errors"][0]["error"]));
+        }
+        int jobIdInt = response["job_id"];
+        jobContext.jobId = std::to_string(jobIdInt);
+        jobContext.rootPath = nix::fmt("%s/job-%s-%s.root", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
+        jobContext.jobStderr = nix::fmt("%s/job-%s-%s.stderr", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
     }
-    json response = json::parse(r.body);
-    if (response["errors"].size() > 0) {
-        throw SlurmAPIError(nix::fmt("%s (%d): %s",
-            response["errors"][0]["description"],
-            response["errors"][0]["error_number"],
-            response["errors"][0]["error"]));
-    }
-    int jobIdInt = response["job_id"];
-    jobContext.jobId = std::to_string(jobIdInt);
-    jobContext.rootPath = nix::fmt("%s/job-%s-%s.root", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
-    jobContext.jobStderr = nix::fmt("%s/job-%s-%s.stderr", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
-    unblockSignals();
 
     bool foundBatchHost = false;
     auto sleepTime = 50ms;
@@ -157,7 +161,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
             nodeName = qresp["jobs"][0]["batch_host"].template get<std::string>();
             foundBatchHost = true;
         } else {
-            std::this_thread::sleep_for(sleepTime);
+            interruptibleSleep(sleepTime);
             if (sleepTime < 1s) sleepTime *= 2;
         }
     }
@@ -198,7 +202,7 @@ static std::string getJobState(std::string jobId, bool useDb = false)
         } else if (qresp["jobs"].size() == 1) {
             return useDb ? qresp["jobs"][0]["state"]["current"][0] : qresp["jobs"][0]["job_state"][0];
         } else {
-            std::this_thread::sleep_for(sleepTime);
+            interruptibleSleep(sleepTime);
             if (sleepTime < 2s) sleepTime *= 2;
         }
     }
@@ -219,7 +223,7 @@ static uint32_t getJobReturnCode(std::string jobId, bool useDb = false)
         } else if (qresp["jobs"].size() == 1 && qresp["jobs"][0]["exit_code"]["return_code"]["set"]) {
             return qresp["jobs"][0]["exit_code"]["return_code"]["number"];
         } else {
-            std::this_thread::sleep_for(50ms);
+            interruptibleSleep(50ms);
         }
     }
 }
@@ -244,7 +248,7 @@ int Slurm::waitForJobFinish(nix::StorePath drvPath)
             } else
                 return getJobReturnCode(jobId);
         } else {
-            std::this_thread::sleep_for(sleepTime);
+            interruptibleSleep(sleepTime);
             if (sleepTime < 4s) sleepTime *= 2;
         }
     }

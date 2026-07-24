@@ -38,7 +38,7 @@ static void waitForJobRunning(int conn, std::string jobId)
             return;
         else if (state == "F")
             throw PBSDeletedError(jobId);
-        std::this_thread::sleep_for(sleepTime);
+        interruptibleSleep(sleepTime);
         if (sleepTime < 1s) sleepTime *= 2;
     }
 }
@@ -136,19 +136,20 @@ void PBS::submit(nix::StorePath drvPath, std::string system, nix::StringSet requ
     char kfVal[] = "oe";  // Hush write-strings warning
     attropl aKeepFiles = {&aName, ATTR_k, nullptr, kfVal, SET};
 
-    blockSignals();
-    char *id = pbs_submit(connHandle, &aKeepFiles, scriptName, nullptr, nullptr);
-    free_attropl_list(aResBase);
-    aName.next = nullptr;
-    if (id == nullptr) {
-        if (auto err_list = pbs_get_attributes_in_error(connHandle)) {
-            auto error = err_list->ecl_attrerr[0];
-            throw PBSSubmitError(nix::fmt("Error submitting PBS job: attribute %s is in error: %s", error.ecl_attribute->name, error.ecl_errmsg));
+    {
+        SignalBlocker blockTerm;
+        char *id = pbs_submit(connHandle, &aKeepFiles, scriptName, nullptr, nullptr);
+        free_attropl_list(aResBase);
+        aName.next = nullptr;
+        if (id == nullptr) {
+            if (auto err_list = pbs_get_attributes_in_error(connHandle)) {
+                auto error = err_list->ecl_attrerr[0];
+                throw PBSSubmitError(nix::fmt("Error submitting PBS job: attribute %s is in error: %s", error.ecl_attribute->name, error.ecl_errmsg));
+            }
+            throw PBSSubmitError(nix::fmt("Error submitting PBS job: %s", pbs_geterrmsg(connHandle)));
         }
-        throw PBSSubmitError(nix::fmt("Error submitting PBS job: %s", pbs_geterrmsg(connHandle)));
+        jobContext.jobId = id;
     }
-    jobContext.jobId = id;
-    unblockSignals();
 
     waitForJobRunning(connHandle, jobContext.jobId);
 
@@ -161,7 +162,7 @@ void PBS::submit(nix::StorePath drvPath, std::string system, nix::StringSet requ
             throw PBSQueryError(nix::fmt("Error querying %s for job %s: %d", ATTR_jobdir, jobContext.jobId, pbs_errno));
         } else if (jobdirStatus->attribs == nullptr) {
             pbs_statfree(jobdirStatus);
-            std::this_thread::sleep_for(sleepTime);
+            interruptibleSleep(sleepTime);
             if (sleepTime < 1s) sleepTime *= 2;
         } else break;
     }
@@ -181,7 +182,7 @@ void PBS::submit(nix::StorePath drvPath, std::string system, nix::StringSet requ
             throw PBSQueryError(nix::fmt("Error querying %s for job %s: %d", ATTR_server, jobContext.jobId, pbs_errno));
         } else if (serverStatus->attribs == nullptr) {
             pbs_statfree(serverStatus);
-            std::this_thread::sleep_for(sleepTime);
+            interruptibleSleep(sleepTime);
             if (sleepTime < 1s) sleepTime *= 2;
         } else break;
     }
@@ -205,7 +206,7 @@ int PBS::waitForJobFinish(nix::StorePath drvPath)
             contexts.erase(drvPath);
             return value;
         }
-        std::this_thread::sleep_for(sleepTime);
+        interruptibleSleep(sleepTime);
         if (sleepTime < 1s) sleepTime *= 2;
     }
 }

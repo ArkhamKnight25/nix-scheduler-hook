@@ -28,11 +28,13 @@ using namespace std::chrono_literals;
 #include <nix/util/hash.hh>
 #include <nix/util/signals.hh>
 #include <nix/util/signals-impl.hh>
+#include <nix/util/finally.hh>
 #include <nix/util/processes.hh>
 #include <nix/util/environment-variables.hh>
 #include <nix/util/config-global.hh>
 
 #include "settings.hh"
+#include "sched_util.hh"
 #include "slurm.hh"
 #include "pbs.hh"
 #include "slurm-native.hh"
@@ -48,14 +50,13 @@ static std::string escapeUri(std::string uri)
     return uri;
 }
 
-struct SigHandlerExit : public std::exception
-{
-    explicit SigHandlerExit() : std::exception() {}
-};
-
 static void sigHandler(int signo)
 {
-    throw SigHandlerExit();
+    /* Only flag the interrupt: throwing from an async signal handler is
+       undefined behavior. nix::checkInterrupt() throws nix::Interrupted
+       at the next safe point, so the stack still unwinds and destructors
+       (job cancellation etc.) run. */
+    nix::setInterrupted(true);
 }
 
 std::filesystem::path getBuildRemoteFromNixBin(std::filesystem::path nixBin)
@@ -153,14 +154,6 @@ struct FallbackHookInstance
 int main(int argc, char **argv)
 {
 try {
-    /* Ensure destructors are called if terminated by Nix */
-    struct sigaction act;
-    sigemptyset(&act.sa_mask);
-    act.sa_flags = 0;
-    act.sa_handler = sigHandler;
-    if (sigaction(SIGTERM, &act, 0))
-        throw nix::SysError("assigning handler for SIGTERM");
-
     nix::logger = nix::makeJSONLogger(nix::getStandardError());
 
     /* Ensure we don't get any SSH passphrase or host key popups. */
@@ -192,6 +185,14 @@ try {
     nix::initLibStore();
     nix::initPlugins();
     auto store = nix::openStore();
+
+    /* Ensure destructors are called if terminated by Nix */
+    struct sigaction act;
+    sigemptyset(&act.sa_mask);
+    act.sa_flags = 0;
+    act.sa_handler = sigHandler;
+    if (sigaction(SIGTERM, &act, 0))
+        throw nix::SysError("assigning handler for SIGTERM");
 
     /* It would be more appropriate to use $XDG_RUNTIME_DIR, since
         that gets cleared on reboot, but it wouldn't work on macOS. */
@@ -244,6 +245,8 @@ try {
         try {
             nix::Activity act(*nix::logger, nix::lvlInfo, nix::actUnknown, "falling back to normal build hook");
             return FallbackHookInstance(amWilling, neededSystem, store->printStorePath(drvPath), requiredFeatures, source).wait();
+        } catch (nix::Interrupted &) {
+            throw;
         } catch (std::exception & e) {
             using namespace nix;
             printError("NSH Error: unable to fallback to normal build hook: %s", e.what());
@@ -280,6 +283,8 @@ try {
     try {
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, "submitting build to scheduler");
         host = scheduler->startBuild(drvPath, neededSystem, requiredFeatures);
+    } catch (nix::Interrupted &) {
+        throw;
     } catch (std::exception & e) {
         auto errorMsg = nix::fmt("NSH Error: error when attempting to build derivation on %s: %s", ourSettings.jobScheduler.get(), e.what());
         if (ourSettings.earlyAccept.get()) {
@@ -309,6 +314,8 @@ try {
                 params["remote-program"] = ourSettings.remoteNixBinDir.get() + "/nix-daemon";
             sshStore = nix::openStore(storeUri, params);
             sshStore->connect();
+        } catch (nix::Interrupted &) {
+            throw;
         } catch (std::exception & e) {
             auto msg = nix::chomp(nix::drainFD(5, {.block = false}));
             auto errorMsg = nix::fmt("NSH Error: cannot build on '%s': %s%s", storeUri, e.what(), msg.empty() ? "" : ": " + msg);
@@ -370,6 +377,8 @@ try {
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, nix::fmt("copying dependencies to '%s'", storeUri));
         try {
             nix::copyPaths(*store, *sshStore, store->parseStorePathSet(inputs), nix::NoRepair, nix::NoCheckSigs, substitute);
+        } catch (nix::Interrupted &) {
+            throw;
         } catch (std::exception & e) {
             using namespace nix;
             printError("NSH Error: error when attempting to copy build dependencies: %s", e.what());
@@ -380,6 +389,8 @@ try {
         rootDrv.insert(store->printStorePath(drvPath));
         try {
             nix::copyClosure(*store, *sshStore, store->parseStorePathSet(rootDrv), nix::NoRepair, nix::NoCheckSigs, substitute);
+        } catch (nix::Interrupted &) {
+            throw;
         } catch (std::exception & e) {
             using namespace nix;
             printError("NSH Error: error when attempting to copy root derivation closure: %s", e.what());
@@ -391,45 +402,72 @@ try {
     uploadLock = -1;
 
     std::atomic<bool> cmdAbend = false;
+    std::atomic<bool> cmdOutDone = false;
+    std::atomic<bool> cmdOutFailed = false;
 
     std::thread cmdOutThread([&]() {
-        auto cmdOutIs = scheduler->getStderrStream(drvPath);
+        /* An exception escaping a thread calls std::terminate(), skipping
+           all cleanup, so trap everything and report failure instead. */
+        try {
+            auto cmdOutIs = scheduler->getStderrStream(drvPath);
 
-        // The invoking Nix process listens on fd 4 for the build log
-        // See https://github.com/NixOS/nix/blob/master/src/libstore/unix/build/hook-instance.cc#L61
-        __gnu_cxx::stdio_filebuf<char> logBuf(4, std::ios::out);
-        std::ostream logOs(&logBuf);
+            // The invoking Nix process listens on fd 4 for the build log
+            // See https://github.com/NixOS/nix/blob/master/src/libstore/unix/build/hook-instance.cc#L61
+            __gnu_cxx::stdio_filebuf<char> logBuf(4, std::ios::out);
+            std::ostream logOs(&logBuf);
 
-        bool gotTerminator = false;
-        while (!gotTerminator && !cmdAbend) {
-            std::string data;
-            char c;
-            while (cmdOutIs->get(c)) {
-                data += c;
+            bool gotTerminator = false;
+            while (!gotTerminator && !cmdAbend) {
+                std::string data;
+                char c;
+                while (cmdOutIs->get(c)) {
+                    data += c;
+                }
+                if (data != "") {
+                    gotTerminator = handleOutput(logOs, data);
+                } else {
+                    std::this_thread::yield();
+                    cmdOutIs->clear();
+                }
             }
-            if (data != "") {
-                gotTerminator = handleOutput(logOs, data);
-            } else {
-                std::this_thread::yield();
-                cmdOutIs->clear();
+            /* Skip the drain when interrupted: during SIGTERM teardown Nix
+               no longer reads fd 4, so writing to a full pipe would block
+               past its SIGKILL deadline. */
+            if (cmdAbend && !nix::getInterrupted()) {
+                // Drain in the case of abnormal termination
+                std::string data;
+                char c;
+                while (cmdOutIs->get(c)) {
+                    data += c;
+                }
+                if (data != "") {
+                    handleOutput(logOs, data);
+                }
             }
+        } catch (std::exception & e) {
+            using namespace nix;
+            printError("NSH Error: build log thread: %s", e.what());
+            cmdOutFailed = true;
+        } catch (...) {
+            cmdOutFailed = true;
         }
-        if (cmdAbend) {
-            // Drain in the case of abnormal termination
-            std::string data;
-            char c;
-            while (cmdOutIs->get(c)) {
-                data += c;
-            }
-            if (data != "") {
-                handleOutput(logOs, data);
-            }
-        }
+        cmdOutDone = true;
+    });
+
+    /* Join cmdOutThread on every exit path: destroying a joinable
+       std::thread calls std::terminate(), which on stack unwinding would
+       kill the process before the scheduler's destructor is reached. */
+    Finally joinCmdOutThread([&]() {
+        cmdAbend = true;
+        if (cmdOutThread.joinable())
+            cmdOutThread.join();
     });
 
     int rc;
     try {
         rc = scheduler->waitForJobFinish(drvPath);
+    } catch (nix::Interrupted &) {
+        throw;
     } catch (std::exception & e) {
         using namespace nix;
         printError("NSH Error: error while waiting for job %s termination: %s", scheduler->getJobId(drvPath), e.what());
@@ -452,7 +490,15 @@ try {
         return rc;
     }
 
+    /* The terminator can never arrive if the ssh/tail stream died, so
+       bound the wait rather than joining unconditionally. */
+    for (int i = 0; i < 100 && !cmdOutDone; ++i)
+        interruptibleSleep(100ms);
+    cmdAbend = true;
     cmdOutThread.join();
+
+    if (cmdOutFailed)
+        return 1;
 
     using namespace nix;
     auto drv = store->readDerivation(drvPath);
@@ -499,8 +545,15 @@ try {
         experimentalFeatureSettings.require(Xp::CaDerivations);
         store->registerDrvOutput(realisation);
     }
-} catch (SigHandlerExit & e) {
+} catch (nix::Interrupted &) {
+    /* SIGTERM from Nix: cleanup already happened while unwinding. */
     return 0;
+} catch (std::exception & e) {
+    /* Without a matching handler the runtime terminates WITHOUT unwinding,
+       so destructors (job cancellation etc.) would be skipped. */
+    using namespace nix;
+    printError("NSH Error: %s", e.what());
+    return 1;
 }
 
     return 0;

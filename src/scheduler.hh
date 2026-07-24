@@ -12,6 +12,7 @@
 #include <nix/store/ssh.hh>
 #include <nix/util/types.hh>
 #include <nix/util/logging.hh>
+#include <nix/util/signals.hh>
 
 #include "settings.hh"
 
@@ -33,15 +34,21 @@ public:
     Scheduler() {}
     virtual ~Scheduler()
     {
-        try {
-            for (auto & [drvPath, jobContext] : contexts) {
+        /* Teardown must not be aborted by a pending interrupt: waits are
+           done with allowInterrupts=false (checkInterrupt inside Pid::wait
+           would throw here on a non-unwind path), and the try/catch is
+           per-context so one failure doesn't skip the remaining cleanup. */
+        for (auto & [drvPath, jobContext] : contexts) {
+            try {
                 if (jobContext.sshMaster) {
                     for (auto & file : {jobContext.rootPath, jobContext.jobStderr}) {
                         nix::Strings rmCmd = {"rm", "-f", file};
                         auto cmd = jobContext.sshMaster->startCommand(std::move(rmCmd));
-                        cmd->sshPid.wait();
+                        cmd->sshPid.wait(false);
                     }
-                    if (ourSettings.collectGarbage.get()) {
+                    /* GC is routine maintenance; skip it when we are being
+                       torn down under Nix's 20s SIGKILL deadline. */
+                    if (ourSettings.collectGarbage.get() && !nix::getInterrupted()) {
                         auto binDir = ourSettings.remoteNixBinDir.get();
                         nix::Strings gcCmd = {
                             (binDir != "" ? binDir + "/" : "") + "nix-store",
@@ -50,16 +57,16 @@ public:
                             ourSettings.remoteStore.get()
                         };
                         auto cmd = jobContext.sshMaster->startCommand(std::move(gcCmd));
-                        if (int rc = cmd->sshPid.wait()) {
+                        if (int rc = cmd->sshPid.wait(false)) {
                             using namespace nix;
                             printError("NSH Error: garbage collection failed: %d", rc);
                         }
                     }
                 }
+            } catch (std::exception & e) {
+                using namespace nix;
+                printError("NSH Error: error during Scheduler teardown: %s", e.what());
             }
-        } catch (std::exception & e) {
-            using namespace nix;
-            printError("NSH Error: error during Scheduler teardown: %s", e.what());
         }
     }
 

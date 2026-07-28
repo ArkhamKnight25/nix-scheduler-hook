@@ -44,6 +44,17 @@ static std::shared_ptr<RestClient::Connection> getConn()
     return conn;
 }
 
+/* slurmrestd failure modes (auth errors, proxies, empty replies) produce
+   plain-text bodies; surface them instead of a bare json parse error. */
+static json parseResponse(const RestClient::Response & r)
+{
+    try {
+        return json::parse(r.body);
+    } catch (json::parse_error &) {
+        throw SlurmAPIError(nix::fmt("non-JSON response from slurmrestd (HTTP %d): %s", r.code, nix::chomp(r.body)));
+    }
+}
+
 void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures)
 {
     auto & jobContext = contexts[drvPath];
@@ -129,7 +140,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
         if (r.body == "Authentication failure") {
             throw SlurmAuthenticationError(r.body);
         }
-        json response = json::parse(r.body);
+        json response = parseResponse(r);
         if (response["errors"].size() > 0) {
             throw SlurmAPIError(nix::fmt("%s (%d): %s",
                 response["errors"][0]["description"],
@@ -147,7 +158,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
     std::string nodeName;
     while (!foundBatchHost) {
         RestClient::Response qr = conn->get("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
-        json qresp = json::parse(qr.body);
+        json qresp = parseResponse(qr);
         if (qresp["errors"].size() > 0) {
             throw SlurmAPIError(nix::fmt("%s (%d): %s",
                 qresp["errors"][0]["description"],
@@ -167,7 +178,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
     }
 
     RestClient::Response qr = conn->get("/slurm/" + SLURM_API_VERSION + "/node/" + nodeName);
-    json qresp = json::parse(qr.body);
+    json qresp = parseResponse(qr);
     if (qresp["errors"].size() > 0) {
         throw SlurmAPIError(nix::fmt("%s (%d): %s",
             qresp["errors"][0]["description"],
@@ -191,7 +202,7 @@ static std::string getJobState(std::string jobId, bool useDb = false)
     auto sleepTime = 50ms;
     while (true) {
         RestClient::Response qr = getConn()->get((useDb ? "/slurmdb/" : "/slurm/") + SLURM_API_VERSION + "/job/" + jobId);
-        json qresp = json::parse(qr.body);
+        json qresp = parseResponse(qr);
         if (qresp["errors"].size() > 0) {
             if (qresp["errors"][0]["error_number"] == 2017 && !useDb)
                 return getJobState(jobId, true);
@@ -212,7 +223,7 @@ static uint32_t getJobReturnCode(std::string jobId, bool useDb = false)
 {
     while (true) {
         RestClient::Response qr = getConn()->get((useDb ? "/slurmdb/" : "/slurm/") + SLURM_API_VERSION + "/job/" + jobId);
-        json qresp = json::parse(qr.body);
+        json qresp = parseResponse(qr);
         if (qresp["errors"].size() > 0) {
             if (qresp["errors"][0]["error_number"] == 2017 && !useDb)
                 return getJobReturnCode(jobId, true);

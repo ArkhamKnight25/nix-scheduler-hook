@@ -27,20 +27,16 @@ constexpr std::string_view SLURM_API_VERSION = "v0.0.43";
 static std::shared_ptr<RestClient::Connection> getConn()
 {
     static bool init = false;
-    static std::shared_ptr<RestClient::Connection> conn;
     if (!init) {
         RestClient::init();
-        conn = std::make_shared<RestClient::Connection>(
-            nix::fmt("http://%s:%d", ourSettings.slurmApiHost.get(), ourSettings.slurmApiPort.get()));
-        RestClient::HeaderFields headers;
-        headers["X-SLURM-USER-TOKEN"] = ourSettings.slurmJwtToken.get();
-        headers["Content-Type"] = "application/json";
-        conn->SetHeaders(headers);
-        /* Bound every REST call: a wedged slurmrestd must not be able to
-           pin us past Nix's 20s SIGTERM-to-SIGKILL teardown window. */
-        conn->SetTimeout(10);
         init = true;
     }
+    auto conn = std::make_shared<RestClient::Connection>(
+        nix::fmt("http://%s:%d", ourSettings.slurmApiHost.get(), ourSettings.slurmApiPort.get()));
+    RestClient::HeaderFields headers;
+    headers["X-SLURM-USER-TOKEN"] = ourSettings.slurmJwtToken.get();
+    headers["Content-Type"] = "application/json";
+    conn->SetHeaders(headers);
     return conn;
 }
 
@@ -133,10 +129,9 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
         }
     }
 
-    auto conn = getConn();
     {
         SignalBlocker blockTerm;
-        RestClient::Response r = conn->post("/slurm/" + SLURM_API_VERSION + "/job/submit", req.dump());
+        RestClient::Response r = getConn()->post("/slurm/" + SLURM_API_VERSION + "/job/submit", req.dump());
         if (r.body == "Authentication failure") {
             throw SlurmAuthenticationError(r.body);
         }
@@ -157,7 +152,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
     auto sleepTime = 50ms;
     std::string nodeName;
     while (!foundBatchHost) {
-        RestClient::Response qr = conn->get("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
+        RestClient::Response qr = getConn()->get("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
         json qresp = parseResponse(qr);
         if (qresp["errors"].size() > 0) {
             throw SlurmAPIError(nix::fmt("%s (%d): %s",
@@ -177,7 +172,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
         }
     }
 
-    RestClient::Response qr = conn->get("/slurm/" + SLURM_API_VERSION + "/node/" + nodeName);
+    RestClient::Response qr = getConn()->get("/slurm/" + SLURM_API_VERSION + "/node/" + nodeName);
     json qresp = parseResponse(qr);
     if (qresp["errors"].size() > 0) {
         throw SlurmAPIError(nix::fmt("%s (%d): %s",

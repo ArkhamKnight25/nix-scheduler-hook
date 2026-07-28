@@ -232,10 +232,16 @@ in
             networking.firewall.enable = false;
             systemd.tmpfiles.rules = [
               "f /etc/munge/munge.key 0400 munge munge - mungeverryweakkeybuteasytointegrateinatest"
+              "d /var/spool/slurmdbd 0755 slurm slurm -"
+              "f /var/spool/slurmdbd/jwt_hs256.key 0400 slurm slurm - thisisjustanexamplejwttoken0000"
             ];
             services.slurm.dbdserver = {
               enable = true;
               storagePassFile = "${passFile}";
+              extraConfig = ''
+                AuthAltTypes=auth/jwt
+                AuthAltParameters=jwt_key=/var/spool/slurmdbd/jwt_hs256.key
+              '';
             };
             services.mysql = {
               enable = true;

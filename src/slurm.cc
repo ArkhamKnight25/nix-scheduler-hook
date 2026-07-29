@@ -11,6 +11,7 @@
 using namespace std::chrono_literals;
 #include <atomic>
 #include <fcntl.h>
+#include <chrono>
 
 #include <nlohmann/json.hpp>
 using namespace nlohmann;
@@ -21,6 +22,8 @@ using namespace nlohmann;
 #include <nix/store/store-open.hh>
 #include <nix/store/store-api.hh>
 #include <nix/store/derivations.hh>
+#include <nix/store/globals.hh>
+#include <nix/store/pathlocks.hh>
 
 constexpr std::string_view SLURM_API_VERSION = "v0.0.43";
 
@@ -194,20 +197,68 @@ static bool isLive(std::string state)
 
 static std::string getJobState(std::string jobId)
 {
-    auto sleepTime = 50ms;
-    while (true) {
-        RestClient::Response qr = getConn()->get("/slurmdb/" + SLURM_API_VERSION + "/job/" + jobId);
-        json qresp = parseResponse(qr);
-        if (qresp["errors"].size() > 0) {
-            throw SlurmAPIError(nix::fmt("%s (%d): %s",
-                qresp["errors"][0]["description"],
-                qresp["errors"][0]["error_number"],
-                qresp["errors"][0]["error"]));
-        } else if (qresp["jobs"].size() == 1) {
-            return qresp["jobs"][0]["state"]["current"][0];
-        } else {
-            interruptibleSleep(sleepTime);
-            if (sleepTime < 2s) sleepTime *= 2;
+    if (ourSettings.slurmBatchStateUpdate.get()) {
+        auto sleepTime = 50ms;
+        while(true) {
+            nix::AutoCloseFD stateFile = nix::openLockFile(std::filesystem::path{nix::settings.nixStateDir} / "nsh-job-state.json", true);
+            nix::lockFile(stateFile.get(), nix::LockType::ltWrite, true);
+            Finally unlock([&]{
+                nix::lockFile(stateFile.get(), nix::LockType::ltNone, false);
+            });
+            auto s = nix::readFile(stateFile.get());
+            if (s.empty())
+                s = "{\"last_updated\": 0, \"jobs\": {}}";
+            json cachedState = json::parse(s);
+            long currentTime = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            if (currentTime >= cachedState["last_updated"].get<long>() + 1) {
+                auto qr = getConn()->get("/slurm/" + SLURM_API_VERSION + "/jobs/state/");
+                json qresp = parseResponse(qr);
+                if (qresp["errors"].size() > 0) {
+                    throw SlurmAPIError(nix::fmt("%s (%d): %s",
+                        qresp["errors"][0]["description"],
+                        qresp["errors"][0]["error_number"],
+                        qresp["errors"][0]["error"]));
+                }
+                json currentState = json::parse(nix::fmt("{\"last_updated\": %d, \"jobs\": {}}", currentTime));
+                for (auto & job : qresp["jobs"]) {
+                    int jobId = job["step_id"]["job_id"]["number"];
+                    currentState["jobs"][std::to_string(jobId)] = job["job_state"][0];
+                }
+                if (currentState["jobs"].contains(jobId)) {
+                    std::string state = currentState["jobs"][jobId];
+                    lseek(stateFile.get(), 0, SEEK_SET);
+                    nix::writeFile(stateFile.get(), currentState.dump());
+                    return state;
+                } else {
+                    nix::lockFile(stateFile.get(), nix::LockType::ltNone, false);
+                    interruptibleSleep(sleepTime);
+                    if (sleepTime < 2s) sleepTime *= 2;
+                }
+            } else {
+                if (cachedState["jobs"].contains(jobId)) {
+                    return cachedState["jobs"][jobId];
+                } else {
+                    nix::lockFile(stateFile.get(), nix::LockType::ltNone, false);
+                    interruptibleSleep(sleepTime);
+                }
+            }
+        }
+    } else {
+        auto sleepTime = 50ms;
+        while (true) {
+            RestClient::Response qr = getConn()->get("/slurmdb/" + SLURM_API_VERSION + "/job/" + jobId);
+            json qresp = parseResponse(qr);
+            if (qresp["errors"].size() > 0) {
+                throw SlurmAPIError(nix::fmt("%s (%d): %s",
+                    qresp["errors"][0]["description"],
+                    qresp["errors"][0]["error_number"],
+                    qresp["errors"][0]["error"]));
+            } else if (qresp["jobs"].size() == 1) {
+                return qresp["jobs"][0]["state"]["current"][0];
+            } else {
+                interruptibleSleep(sleepTime);
+                if (sleepTime < 2s) sleepTime *= 2;
+            }
         }
     }
 }

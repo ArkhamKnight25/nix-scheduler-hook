@@ -111,6 +111,13 @@ struct Settings : public nix::Config
         "Accept the build before submitting the job, allows submission of more than one pending job at once at the cost of losing the ability to retry."
     };
 
+    nix::Setting<bool> slurmBatchStateUpdate {
+        this,
+        false,
+        "slurm-batch-state-update",
+        "Perform state updating in batches from a single build hook instance, rather than each instance individually querying the endpoint."
+    };
+
     nix::Setting<std::string> slurmConf {
         this,
         "",

@@ -34,6 +34,7 @@ The current settings available for Slurm are:
 - `slurm-feature-params`: Extra parameters to set in the /job/submit API request on a per-feature basis. JSON dictionary mapping systems to a dictionary that will be merged with the 'job' value. Takes precedence over `slurm-extra-submission-params` and `slurm-system-params`. Example: `{"gpu": {"constraints": "gpu"}}`.
 - `submit-env`: JSON list of VAR=value strings representing the environment of the job. Default: `[PATH=/run/current-system/sw/bin/:/usr/local/bin:/usr/bin:/bin:/nix/var/nix/profiles/default/bin]`.
 - `submit-dir`: Working directory for the job. Only applies to the slurm schedulers. Default: `/tmp`.
+- `slurm-batch-state-update`: Perform state updating in batches from a single build hook instance, rather than each instance individually querying the endpoint. Default: `false`.
 
 A basic merge is performed on the `-params` values, with special handling for the `constraints` string value to ensure it is also merged with `&`. JSON objects are merged recursively, top-level arrays are concatenated, and other values are overwritten according to the order of precedence.
 

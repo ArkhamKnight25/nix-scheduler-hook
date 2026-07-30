@@ -247,6 +247,16 @@ try {
     if (sigaction(SIGTERM, &act, 0))
         throw nix::SysError("assigning handler for SIGTERM");
 
+    /* Nix delivers SIGTERM to our whole process group, so the ssh helper
+       processes die before we finish unwinding; a write to one of their
+       pipes would then raise SIGPIPE, whose default action terminates the
+       process without running any destructor. Ignore it so such writes
+       fail with EPIPE and become ordinary errors (initNix() shields
+       regular nix processes the same way, but we only run initLibStore()). */
+    act.sa_handler = SIG_IGN;
+    if (sigaction(SIGPIPE, &act, 0))
+        throw nix::SysError("ignoring SIGPIPE");
+
     /* It would be more appropriate to use $XDG_RUNTIME_DIR, since
         that gets cleared on reboot, but it wouldn't work on macOS. */
     if (auto localStore = store.dynamic_pointer_cast<nix::LocalFSStore>())

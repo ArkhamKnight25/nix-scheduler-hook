@@ -153,6 +153,13 @@ struct Settings : public nix::Config
         "JWT token for authentication to the Slurm REST API."
     };
 
+    nix::Setting<unsigned int> slurmApiTimeout {
+        this,
+        60,
+        "slurm-api-timeout",
+        "Timeout in seconds for Slurm REST API requests, protecting against stalled connections. Set to 0 to disable."
+    };
+
     nix::Setting<std::string> slurmExtraJobSubmissionParams {
         this,
         {},

@@ -27,7 +27,15 @@ using namespace nlohmann;
 
 constexpr std::string_view SLURM_API_VERSION = "v0.0.43";
 
-static std::shared_ptr<RestClient::Connection> getConn()
+/* Requests made with abortOnInterrupt=true are aborted by libcurl's
+   progress callback once SIGTERM has flagged the interrupt: curl retries
+   on EINTR, and Nix follows SIGTERM with SIGKILL after a few seconds, so
+   an in-flight request that kept waiting would prevent the stack from
+   unwinding (and the job from being cancelled) in time. It must be false
+   for requests that have to complete once issued: the submit POST (or a
+   job could be accepted server-side with nobody recording its id) and
+   teardown requests (which run with the interrupt flag already set). */
+static std::shared_ptr<RestClient::Connection> getConn(bool abortOnInterrupt = true)
 {
     static bool init = false;
     if (!init) {
@@ -40,6 +48,11 @@ static std::shared_ptr<RestClient::Connection> getConn()
     headers["X-SLURM-USER-TOKEN"] = ourSettings.slurmJwtToken.get();
     headers["Content-Type"] = "application/json";
     conn->SetHeaders(headers);
+    conn->SetTimeout(ourSettings.slurmApiTimeout.get());
+    if (abortOnInterrupt)
+        conn->SetFileProgressCallback([](void *, double, double, double, double) -> int {
+            return nix::getInterrupted() ? 1 : 0;
+        });
     return conn;
 }
 
@@ -52,6 +65,18 @@ static json parseResponse(const RestClient::Response & r)
     } catch (json::parse_error &) {
         throw SlurmAPIError(nix::fmt("non-JSON response from slurmrestd (HTTP %d): %s", r.code, nix::chomp(r.body)));
     }
+}
+
+/* Polling GET whose interruption is safe: checkInterrupt() turns a
+   request aborted by the progress callback (or a SIGTERM that arrived
+   between requests) into nix::Interrupted, so the stack unwinds and the
+   destructors cancel the job instead of reporting a spurious API error. */
+static json apiGet(const std::string & path)
+{
+    nix::checkInterrupt();
+    auto r = getConn()->get(path);
+    nix::checkInterrupt();
+    return parseResponse(r);
 }
 
 static bool isLive(std::string state)
@@ -75,8 +100,7 @@ static std::string getJobState(std::string jobId)
             json cachedState = json::parse(s);
             long currentTime = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
             if (currentTime >= cachedState["last_updated"].get<long>() + 1) {
-                auto qr = getConn()->get("/slurm/" + SLURM_API_VERSION + "/jobs/state/");
-                json qresp = parseResponse(qr);
+                json qresp = apiGet("/slurm/" + std::string(SLURM_API_VERSION) + "/jobs/state/");
                 if (qresp["errors"].size() > 0) {
                     throw SlurmAPIError(nix::fmt("%s (%d): %s",
                         qresp["errors"][0]["description"],
@@ -113,8 +137,7 @@ static std::string getJobState(std::string jobId)
     } else {
         auto sleepTime = 50ms;
         while (true) {
-            RestClient::Response qr = getConn()->get("/slurmdb/" + SLURM_API_VERSION + "/job/" + jobId);
-            json qresp = parseResponse(qr);
+            json qresp = apiGet("/slurmdb/" + std::string(SLURM_API_VERSION) + "/job/" + jobId);
             if (qresp["errors"].size() > 0) {
                 throw SlurmAPIError(nix::fmt("%s (%d): %s",
                     qresp["errors"][0]["description"],
@@ -229,7 +252,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
 
     {
         SignalBlocker blockTerm;
-        RestClient::Response r = getConn()->post("/slurm/" + SLURM_API_VERSION + "/job/submit", req.dump());
+        RestClient::Response r = getConn(false)->post("/slurm/" + SLURM_API_VERSION + "/job/submit", req.dump());
         if (r.body == "Authentication failure") {
             throw SlurmAuthenticationError(r.body);
         }
@@ -252,8 +275,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
     auto sleepTime = 50ms;
     std::string nodeName;
     while (!foundBatchHost) {
-        RestClient::Response qr = getConn()->get("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
-        json qresp = parseResponse(qr);
+        json qresp = apiGet("/slurm/" + std::string(SLURM_API_VERSION) + "/job/" + jobContext.jobId);
         if (qresp["errors"].size() > 0) {
             throw SlurmAPIError(nix::fmt("%s (%d): %s",
                 qresp["errors"][0]["description"],
@@ -272,8 +294,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
         }
     }
 
-    RestClient::Response qr = getConn()->get("/slurm/" + SLURM_API_VERSION + "/node/" + nodeName);
-    json qresp = parseResponse(qr);
+    json qresp = apiGet("/slurm/" + std::string(SLURM_API_VERSION) + "/node/" + nodeName);
     if (qresp["errors"].size() > 0) {
         throw SlurmAPIError(nix::fmt("%s (%d): %s",
             qresp["errors"][0]["description"],
@@ -290,8 +311,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
 static uint32_t getJobReturnCode(std::string jobId)
 {
     while (true) {
-        RestClient::Response qr = getConn()->get("/slurmdb/" + SLURM_API_VERSION + "/job/" + jobId);
-        json qresp = parseResponse(qr);
+        json qresp = apiGet("/slurmdb/" + std::string(SLURM_API_VERSION) + "/job/" + jobId);
         if (qresp["errors"].size() > 0) {
             throw SlurmAPIError(nix::fmt("%s (%d): %s",
                 qresp["errors"][0]["description"],
@@ -335,8 +355,8 @@ Slurm::~Slurm()
 {
     for (auto & [drvPath, jobContext] : contexts) {
         try {
-            if (jobContext.jobId != "" && isLive(getJobState(jobContext.jobId))) {
-                getConn()->del("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
+            if (jobContext.jobId != "" &&  isLive(getJobState(jobContext.jobId))) {
+                getConn(false)->del("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
             }
         } catch (std::exception & e) {
             using namespace nix;

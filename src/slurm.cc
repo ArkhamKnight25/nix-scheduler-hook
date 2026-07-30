@@ -54,6 +54,101 @@ static json parseResponse(const RestClient::Response & r)
     }
 }
 
+static bool isLive(std::string state)
+{
+    return (state == "PENDING" || state == "RUNNING");
+}
+
+static std::string getJobState(std::string jobId)
+{
+    if (ourSettings.slurmBatchStateUpdate.get()) {
+        auto sleepTime = 50ms;
+        while(true) {
+            nix::AutoCloseFD stateFile = nix::openLockFile(std::filesystem::path{nix::settings.nixStateDir} / "nsh-job-state.json", true);
+            nix::lockFile(stateFile.get(), nix::LockType::ltWrite, true);
+            Finally unlock([&]{
+                nix::lockFile(stateFile.get(), nix::LockType::ltNone, false);
+            });
+            auto s = nix::readFile(stateFile.get());
+            if (s.empty())
+                s = "{\"last_updated\": 0, \"jobs\": {}}";
+            json cachedState = json::parse(s);
+            long currentTime = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            if (currentTime >= cachedState["last_updated"].get<long>() + 1) {
+                auto qr = getConn()->get("/slurm/" + SLURM_API_VERSION + "/jobs/state/");
+                json qresp = parseResponse(qr);
+                if (qresp["errors"].size() > 0) {
+                    throw SlurmAPIError(nix::fmt("%s (%d): %s",
+                        qresp["errors"][0]["description"],
+                        qresp["errors"][0]["error_number"],
+                        qresp["errors"][0]["error"]));
+                }
+                json currentState = json::parse(nix::fmt("{\"last_updated\": %d, \"jobs\": {}}", currentTime));
+                for (auto & job : qresp["jobs"]) {
+                    /* job_id is a string here, decorated for array/het jobs
+                       ("123_5", "123_[0-99]", "123+0"); nsh jobs are plain. */
+                    currentState["jobs"][job["job_id"].get<std::string>()] = job["state"][0];
+                }
+                if (currentState["jobs"].contains(jobId)) {
+                    std::string state = currentState["jobs"][jobId];
+                    lseek(stateFile.get(), 0, SEEK_SET);
+                    if (ftruncate(stateFile.get(), 0) == -1)
+                        throw nix::SysError("truncating nsh-job-state.json");
+                    nix::writeFile(stateFile.get(), currentState.dump());
+                    return state;
+                } else {
+                    nix::lockFile(stateFile.get(), nix::LockType::ltNone, false);
+                    interruptibleSleep(sleepTime);
+                    if (sleepTime < 2s) sleepTime *= 2;
+                }
+            } else {
+                if (cachedState["jobs"].contains(jobId)) {
+                    return cachedState["jobs"][jobId];
+                } else {
+                    nix::lockFile(stateFile.get(), nix::LockType::ltNone, false);
+                    interruptibleSleep(sleepTime);
+                }
+            }
+        }
+    } else {
+        auto sleepTime = 50ms;
+        while (true) {
+            RestClient::Response qr = getConn()->get("/slurmdb/" + SLURM_API_VERSION + "/job/" + jobId);
+            json qresp = parseResponse(qr);
+            if (qresp["errors"].size() > 0) {
+                throw SlurmAPIError(nix::fmt("%s (%d): %s",
+                    qresp["errors"][0]["description"],
+                    qresp["errors"][0]["error_number"],
+                    qresp["errors"][0]["error"]));
+            } else if (qresp["jobs"].size() == 1) {
+                return qresp["jobs"][0]["state"]["current"][0];
+            } else {
+                interruptibleSleep(sleepTime);
+                if (sleepTime < 2s) sleepTime *= 2;
+            }
+        }
+    }
+}
+
+static void waitForJobRunning(std::string jobId)
+{
+    auto sleepTime = 50ms;
+    while (true) {
+        auto state = getJobState(jobId);
+        if (state == "RUNNING")
+            return;
+        else if (!isLive(state)) {
+            if (state != "COMPLETED" && state != "FAILED") {
+                throw nix::Error("NSH Error: unexpected job state %s", state);
+            } else
+                return;
+        } else {
+            interruptibleSleep(sleepTime);
+            if (sleepTime < 4s) sleepTime *= 2;
+        }
+    }
+}
+
 void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures)
 {
     auto & jobContext = contexts[drvPath];
@@ -151,6 +246,8 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
         jobContext.jobStderr = nix::fmt("%s/job-%s-%s.stderr", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
     }
 
+    waitForJobRunning(jobContext.jobId);
+
     bool foundBatchHost = false;
     auto sleepTime = 50ms;
     std::string nodeName;
@@ -188,79 +285,6 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
         throw SlurmAPIError("too many matching nodes returned in query");
     else
         throw SlurmAPIError("no matching nodes returned in query");
-}
-
-static bool isLive(std::string state)
-{
-    return (state == "PENDING" || state == "RUNNING");
-}
-
-static std::string getJobState(std::string jobId)
-{
-    if (ourSettings.slurmBatchStateUpdate.get()) {
-        auto sleepTime = 50ms;
-        while(true) {
-            nix::AutoCloseFD stateFile = nix::openLockFile(std::filesystem::path{nix::settings.nixStateDir} / "nsh-job-state.json", true);
-            nix::lockFile(stateFile.get(), nix::LockType::ltWrite, true);
-            Finally unlock([&]{
-                nix::lockFile(stateFile.get(), nix::LockType::ltNone, false);
-            });
-            auto s = nix::readFile(stateFile.get());
-            if (s.empty())
-                s = "{\"last_updated\": 0, \"jobs\": {}}";
-            json cachedState = json::parse(s);
-            long currentTime = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-            if (currentTime >= cachedState["last_updated"].get<long>() + 1) {
-                auto qr = getConn()->get("/slurm/" + SLURM_API_VERSION + "/jobs/state/");
-                json qresp = parseResponse(qr);
-                if (qresp["errors"].size() > 0) {
-                    throw SlurmAPIError(nix::fmt("%s (%d): %s",
-                        qresp["errors"][0]["description"],
-                        qresp["errors"][0]["error_number"],
-                        qresp["errors"][0]["error"]));
-                }
-                json currentState = json::parse(nix::fmt("{\"last_updated\": %d, \"jobs\": {}}", currentTime));
-                for (auto & job : qresp["jobs"]) {
-                    int jobId = job["step_id"]["job_id"]["number"];
-                    currentState["jobs"][std::to_string(jobId)] = job["job_state"][0];
-                }
-                if (currentState["jobs"].contains(jobId)) {
-                    std::string state = currentState["jobs"][jobId];
-                    lseek(stateFile.get(), 0, SEEK_SET);
-                    nix::writeFile(stateFile.get(), currentState.dump());
-                    return state;
-                } else {
-                    nix::lockFile(stateFile.get(), nix::LockType::ltNone, false);
-                    interruptibleSleep(sleepTime);
-                    if (sleepTime < 2s) sleepTime *= 2;
-                }
-            } else {
-                if (cachedState["jobs"].contains(jobId)) {
-                    return cachedState["jobs"][jobId];
-                } else {
-                    nix::lockFile(stateFile.get(), nix::LockType::ltNone, false);
-                    interruptibleSleep(sleepTime);
-                }
-            }
-        }
-    } else {
-        auto sleepTime = 50ms;
-        while (true) {
-            RestClient::Response qr = getConn()->get("/slurmdb/" + SLURM_API_VERSION + "/job/" + jobId);
-            json qresp = parseResponse(qr);
-            if (qresp["errors"].size() > 0) {
-                throw SlurmAPIError(nix::fmt("%s (%d): %s",
-                    qresp["errors"][0]["description"],
-                    qresp["errors"][0]["error_number"],
-                    qresp["errors"][0]["error"]));
-            } else if (qresp["jobs"].size() == 1) {
-                return qresp["jobs"][0]["state"]["current"][0];
-            } else {
-                interruptibleSleep(sleepTime);
-                if (sleepTime < 2s) sleepTime *= 2;
-            }
-        }
-    }
 }
 
 static uint32_t getJobReturnCode(std::string jobId)

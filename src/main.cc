@@ -1,4 +1,5 @@
 #include <iostream>
+#include <nix/store/store-api.hh>
 #include <optional>
 #include <thread>
 using namespace std::chrono_literals;
@@ -440,7 +441,7 @@ try {
         nix::StringSet rootDrv;
         rootDrv.insert(store->printStorePath(drvPath));
         try {
-            nix::copyClosure(*store, *sshStore, store->parseStorePathSet(rootDrv), nix::NoRepair, nix::NoCheckSigs, substitute);
+            nix::copyClosure(*store, *sshStore, store->parseStorePathSet(rootDrv), nix::NoRepair, nix::NoCheckSigs, nix::SubstituteFlag::NoSubstitute);
         } catch (nix::Interrupted &) {
             throw;
         } catch (std::exception & e) {

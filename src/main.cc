@@ -349,7 +349,7 @@ try {
     } catch (nix::Interrupted &) {
         throw;
     } catch (std::exception & e) {
-        auto errorMsg = nix::fmt("NSH Error: error when attempting to build derivation on %s: %s", ourSettings.jobScheduler.get(), e.what());
+        auto errorMsg = nix::fmt("error when attempting to build derivation on %s: %s", ourSettings.jobScheduler.get(), e.what());
         if (ourSettings.earlyAccept.get()) {
             // We can't decline because we already accepted, throw an exception
             throw nix::Error(errorMsg);
@@ -381,7 +381,7 @@ try {
             throw;
         } catch (std::exception & e) {
             auto msg = nix::chomp(nix::drainFD(5, {.block = false}));
-            auto errorMsg = nix::fmt("NSH Error: cannot build on '%s': %s%s", storeUri, e.what(), msg.empty() ? "" : ": " + msg);
+            auto errorMsg = nix::fmt("cannot build on '%s': %s%s", storeUri, e.what(), msg.empty() ? "" : ": " + msg);
             if (ourSettings.earlyAccept.get()) {
                 // We can't decline because we already accepted, throw an exception
                 throw nix::Error(errorMsg);

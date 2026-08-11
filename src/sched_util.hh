@@ -20,25 +20,36 @@ inline std::string genScript(nix::StorePath drvPath, std::string rootPath)
 
     std::string script =
         "#!/bin/sh\n"
-        "while ! %1%nix-store --store '%2%' --query --hash %3%/%4% >/dev/null 2>&1; do sleep 0.1; done;"
-        "%1%nix-store --store '%2%' --realise %3%/%4% --quiet --option system-features '%5%' --add-root %6%;"
-        "rc=$?;"
-        "echo '@nsh done' >&2;"
-        "exit $rc";
+        "while ! %1%nix-store --store '%2%' --query --hash %3%/%4% >/dev/null 2>&1; do sleep 0.1; done\n"
+        "%1%nix-store --store '%2%' --realise %3%/%4% --quiet --option system-features '%5%' --add-root %6%\n"
+        "rc=$?\n"
+        "echo '@nsh done' >&2\n"
+        "exit $rc\n";
+
+    std::string remoteBuildScript =
+        "#!/bin/sh\n"
+        "sleep infinity\n";
 
     auto submitScript = ourSettings.submitScript.get();
-    if (submitScript != "")
-        script = nix::readFile(submitScript);
 
-    return nix::fmt(
-        script,
-        nixCmdPrefix,
-        ourSettings.remoteStore.get(),
-        ourSettings.storeDir.get(),
-        std::string(drvPath.to_string()),
-        boost::algorithm::join(ourSettings.systemFeatures.get(), " "),
-        rootPath
-    );
+    if (ourSettings.remoteBuilding.get()) {
+        if (submitScript != "")
+            remoteBuildScript = nix::readFile(submitScript);
+        return remoteBuildScript;
+    } else {
+        if (submitScript != "")
+            script = nix::readFile(submitScript);
+        return nix::fmt(
+            script,
+            nixCmdPrefix,
+            ourSettings.remoteStore.get(),
+            ourSettings.storeDir.get(),
+            std::string(drvPath.to_string()),
+            boost::algorithm::join(ourSettings.systemFeatures.get(), " "),
+            rootPath
+        );
+    }
+
 }
 
 /* Blocks SIGTERM for the enclosing scope, so that termination can't slip

@@ -16,6 +16,7 @@ General settings:
 - `ssh-port`: SSH port for connecting to the remote cluster nodes. Default: `22`.
 - `ssh-user`: SSH user for connecting to the remote cluster nodes. If unset, it will be as if the user component was not specified, falling back to the relevant SSH config.
 - `early-accept`: Accept the build before submitting the job, allows submission of more than one pending job at once at the cost of losing the ability to retry. Default: `false`.
+- `remote-building`: Build over SSH rather than as part of the job script. Avoids copying the entire derivation closure to the remote. The job script just becomes a reservation system and will exit once the outputs exist. The SSH user must be a trusted user on the remotes.
 
 ## Supported Job Schedulers
 

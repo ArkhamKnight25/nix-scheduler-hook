@@ -356,7 +356,16 @@ Slurm::~Slurm()
     for (auto & [drvPath, jobContext] : contexts) {
         try {
             if (jobContext.jobId != "" &&  isLive(getJobState(jobContext.jobId))) {
-                getConn(false)->del("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
+                auto sleepTime = 50ms;
+                while (true) {
+                    auto resp = getConn(false)->del("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
+                    if (resp.code == 200)
+                        break;
+                    else {
+                        std::this_thread::sleep_for(sleepTime);
+                        if (sleepTime < 400ms) sleepTime *= 2;
+                    }
+                }
             }
         } catch (std::exception & e) {
             using namespace nix;

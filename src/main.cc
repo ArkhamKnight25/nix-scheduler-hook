@@ -207,7 +207,7 @@ struct FallbackHookInstance
 int main(int argc, char **argv)
 {
 try {
-    nix::logger = nix::makeJSONLogger(nix::getStandardError());
+    nix::logger = nix::makeJSONLogger(nix::getStandardError()).release();
 
     /* Ensure we don't get any SSH passphrase or host key popups. */
     unsetenv("DISPLAY");
@@ -443,133 +443,155 @@ try {
         } catch (nix::Interrupted &) {
             throw;
         } catch (std::exception & e) {
-            using namespace nix;
-            printError("NSH Error: error when attempting to copy build dependencies: %s", e.what());
-            std::cerr << "# decline-permanently\n";
-            return 0;
+            throw nix::Error("error when attempting to copy build dependencies: %s", e.what());
         }
-        nix::StringSet rootDrv;
-        rootDrv.insert(store->printStorePath(drvPath));
-        try {
-            nix::copyClosure(*store, *sshStore, store->parseStorePathSet(rootDrv), nix::NoRepair, nix::NoCheckSigs, nix::SubstituteFlag::NoSubstitute);
-        } catch (nix::Interrupted &) {
-            throw;
-        } catch (std::exception & e) {
-            using namespace nix;
-            printError("NSH Error: error when attempting to copy root derivation closure: %s", e.what());
-            std::cerr << "# decline-permanently\n";
-            return 0;
+
+        // We only want to copy the derivation closure in the non-remote building case. Otherwise, build remotely.
+        if (!ourSettings.remoteBuilding.get()) {
+            nix::StringSet rootDrv;
+            rootDrv.insert(store->printStorePath(drvPath));
+            try {
+                nix::copyClosure(*store, *sshStore, store->parseStorePathSet(rootDrv), nix::NoRepair, nix::NoCheckSigs, nix::SubstituteFlag::NoSubstitute);
+            } catch (nix::Interrupted &) {
+                throw;
+            } catch (std::exception & e) {
+                throw nix::Error("error when attempting to copy root derivation closure: %s", e.what());
+            }
+        }
+    }
+
+    if (ourSettings.remoteBuilding.get()) {
+        auto drv = store->readDerivation(drvPath);
+
+        // We always use ssh-ng, so we always know if we're trusted or not
+        bool trusted = *sshStore->isTrustedClient();
+
+        std::optional<nix::BuildResult> optResult;
+
+        if (trusted || drv.type().isCA()) {
+            if (!drv.inputDrvs.map.empty())
+                drv.inputSrcs = store->parseStorePathSet(inputs);
+            optResult = sshStore->buildDerivation(drvPath, static_cast<const nix::BasicDerivation &>(drv));
+            auto & result = *optResult;
+            if (auto * failureP = result.tryGetFailure()) {
+                if (nix::settings.keepFailed)
+                    nix::warn("The failed build directory was kept on the remote builder due to `--keep-failed`.%s");
+                throw nix::Error(
+                    "build of '%s' on '%s' failed: %s", store->printStorePath(drvPath), storeUri, failureP->message());
+            }
+        } else {
+            throw nix::Error("cannot build with remote build mode, we are not a trusted client. Add the SSH user to the trusted-users setting on the remote.");
         }
     }
 
     uploadLock = -1;
 
-    std::atomic<bool> cmdAbend = false;
-    std::atomic<bool> cmdOutDone = false;
-    std::atomic<bool> cmdOutFailed = false;
+    if (!ourSettings.remoteBuilding.get()) {
+        std::atomic<bool> cmdAbend = false;
+        std::atomic<bool> cmdOutDone = false;
+        std::atomic<bool> cmdOutFailed = false;
 
-    std::thread cmdOutThread([&]() {
-        /* An exception escaping a thread calls std::terminate(), skipping
-           all cleanup, so trap everything and report failure instead. */
+        std::thread cmdOutThread([&]() {
+            /* An exception escaping a thread calls std::terminate(), skipping
+            all cleanup, so trap everything and report failure instead. */
+            try {
+                auto cmdOutIs = scheduler->getStderrStream(drvPath);
+
+                // The invoking Nix process listens on fd 4 for the build log
+                // See https://github.com/NixOS/nix/blob/master/src/libstore/unix/build/hook-instance.cc#L61
+                fcntl(4, F_SETFL, fcntl(4, F_GETFL, 0) | O_NONBLOCK);
+                LogPipeBuf logBuf(cmdAbend);
+                std::ostream logOs(&logBuf);
+
+                bool gotTerminator = false;
+                while (!gotTerminator && !cmdAbend) {
+                    std::string data;
+                    char c;
+                    while (cmdOutIs->get(c)) {
+                        data += c;
+                    }
+                    if (data != "") {
+                        gotTerminator = handleOutput(logOs, data);
+                    } else {
+                        std::this_thread::yield();
+                        cmdOutIs->clear();
+                    }
+                }
+                if (cmdAbend) {
+                    // Drain in the case of abnormal termination
+                    std::string data;
+                    char c;
+                    while (cmdOutIs->get(c)) {
+                        data += c;
+                    }
+                    if (data != "") {
+                        handleOutput(logOs, data);
+                    }
+                }
+            } catch (std::exception & e) {
+                using namespace nix;
+                printError("NSH Error: build log thread: %s", e.what());
+                cmdOutFailed = true;
+            } catch (...) {
+                cmdOutFailed = true;
+            }
+            cmdOutDone = true;
+        });
+
+        /* Join cmdOutThread on every exit path: destroying a joinable
+        std::thread calls std::terminate(), which on stack unwinding would
+        kill the process before the scheduler's destructor is reached. */
+        Finally joinCmdOutThread([&]() {
+            cmdAbend = true;
+            if (cmdOutThread.joinable())
+                cmdOutThread.join();
+        });
+
+        int rc;
         try {
-            auto cmdOutIs = scheduler->getStderrStream(drvPath);
-
-            // The invoking Nix process listens on fd 4 for the build log
-            // See https://github.com/NixOS/nix/blob/master/src/libstore/unix/build/hook-instance.cc#L61
-            fcntl(4, F_SETFL, fcntl(4, F_GETFL, 0) | O_NONBLOCK);
-            LogPipeBuf logBuf(cmdAbend);
-            std::ostream logOs(&logBuf);
-
-            bool gotTerminator = false;
-            while (!gotTerminator && !cmdAbend) {
-                std::string data;
-                char c;
-                while (cmdOutIs->get(c)) {
-                    data += c;
-                }
-                if (data != "") {
-                    gotTerminator = handleOutput(logOs, data);
-                } else {
-                    std::this_thread::yield();
-                    cmdOutIs->clear();
-                }
-            }
-            if (cmdAbend) {
-                // Drain in the case of abnormal termination
-                std::string data;
-                char c;
-                while (cmdOutIs->get(c)) {
-                    data += c;
-                }
-                if (data != "") {
-                    handleOutput(logOs, data);
-                }
-            }
+            rc = scheduler->waitForJobFinish(drvPath);
+        } catch (nix::Interrupted &) {
+            throw;
         } catch (std::exception & e) {
             using namespace nix;
-            printError("NSH Error: build log thread: %s", e.what());
-            cmdOutFailed = true;
-        } catch (...) {
-            cmdOutFailed = true;
-        }
-        cmdOutDone = true;
-    });
-
-    /* Join cmdOutThread on every exit path: destroying a joinable
-       std::thread calls std::terminate(), which on stack unwinding would
-       kill the process before the scheduler's destructor is reached. */
-    Finally joinCmdOutThread([&]() {
-        cmdAbend = true;
-        if (cmdOutThread.joinable())
+            printError("NSH Error: error while waiting for job %s termination: %s", scheduler->getJobId(drvPath), e.what());
+            cmdAbend = true;
             cmdOutThread.join();
-    });
+            return 1;
+        }
+        if (rc == -1) {
+            using namespace nix;
+            printError("NSH Error: job %s abnormally terminated.", scheduler->getJobId(drvPath));
+            cmdAbend = true;
+            cmdOutThread.join();
+            return 1;
+        } else if (rc) {
+            // Build failed, so no more work to do
+            using namespace nix;
+            printError("build failed with exit code %d", rc);
+            cmdAbend = true;
+            cmdOutThread.join();
+            return rc;
+        }
 
-    int rc;
-    try {
-        rc = scheduler->waitForJobFinish(drvPath);
-    } catch (nix::Interrupted &) {
-        throw;
-    } catch (std::exception & e) {
-        using namespace nix;
-        printError("NSH Error: error while waiting for job %s termination: %s", scheduler->getJobId(drvPath), e.what());
+        /* The terminator can never arrive if the ssh/tail stream died, so
+        bound the wait rather than joining unconditionally. */
+        for (int i = 0; i < 100 && !cmdOutDone; ++i)
+            interruptibleSleep(100ms);
         cmdAbend = true;
         cmdOutThread.join();
-        return 1;
+
+        if (cmdOutFailed)
+            return 1;
     }
-    if (rc == -1) {
-        using namespace nix;
-        printError("NSH Error: job %s abnormally terminated.", scheduler->getJobId(drvPath));
-        cmdAbend = true;
-        cmdOutThread.join();
-        return 1;
-    } else if (rc) {
-        // Build failed, so no more work to do
-        using namespace nix;
-        printError("build failed with exit code %d", rc);
-        cmdAbend = true;
-        cmdOutThread.join();
-        return rc;
-    }
-
-    /* The terminator can never arrive if the ssh/tail stream died, so
-       bound the wait rather than joining unconditionally. */
-    for (int i = 0; i < 100 && !cmdOutDone; ++i)
-        interruptibleSleep(100ms);
-    cmdAbend = true;
-    cmdOutThread.join();
-
-    if (cmdOutFailed)
-        return 1;
 
     using namespace nix;
     auto drv = store->readDerivation(drvPath);
-    auto outputHashes = staticOutputHashes(*store, drv);
     std::set<Realisation> missingRealisations;
     StorePathSet missingPaths;
     if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations) && !drv.type().hasKnownOutputPaths()) {
         for (auto & outputName : wantedOutputs) {
-            auto thisOutputHash = outputHashes.at(outputName);
-            auto thisOutputId = DrvOutput{thisOutputHash, outputName};
+            auto thisOutputId = DrvOutput{drvPath, outputName};
             if (!store->queryRealisation(thisOutputId)) {
                 debug("missing output %s", outputName);
                 auto r = sshStore->queryRealisation(thisOutputId);

@@ -339,8 +339,14 @@ try {
         return 0;
     }
 
-    if (ourSettings.earlyAccept.get())
+    nix::StringSet inputs;
+    nix::StringSet wantedOutputs;
+
+    if (ourSettings.earlyAccept.get()) {
         std::cerr << "# accept\n" << ourSettings.jobScheduler.get() << "\n";
+        inputs = nix::readStrings<nix::StringSet>(source);
+        wantedOutputs = nix::readStrings<nix::StringSet>(source);
+    }
 
     std::string host;
     try {
@@ -394,11 +400,11 @@ try {
         }
     }
 
-    if (!ourSettings.earlyAccept.get())
+    if (!ourSettings.earlyAccept.get()) {
         std::cerr << "# accept\n" << storeUri << "\n";
-
-    auto inputs = nix::readStrings<nix::StringSet>(source);
-    auto wantedOutputs = nix::readStrings<nix::StringSet>(source);
+        inputs = nix::readStrings<nix::StringSet>(source);
+        wantedOutputs = nix::readStrings<nix::StringSet>(source);
+    }
 
     mkdir(currentLoad.c_str(), 0777);
 

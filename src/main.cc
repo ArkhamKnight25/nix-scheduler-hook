@@ -207,7 +207,7 @@ struct FallbackHookInstance
 int main(int argc, char **argv)
 {
 try {
-    nix::logger = nix::makeJSONLogger(nix::getStandardError()).release();
+    nix::logger = nix::makeJSONLogger(nix::getStandardError());
 
     /* Ensure we don't get any SSH passphrase or host key popups. */
     unsetenv("DISPLAY");
@@ -587,11 +587,13 @@ try {
 
     using namespace nix;
     auto drv = store->readDerivation(drvPath);
+    auto outputHashes = staticOutputHashes(*store, drv);
     std::set<Realisation> missingRealisations;
     StorePathSet missingPaths;
     if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations) && !drv.type().hasKnownOutputPaths()) {
         for (auto & outputName : wantedOutputs) {
-            auto thisOutputId = DrvOutput{drvPath, outputName};
+            auto thisOutputHash = outputHashes.at(outputName);
+            auto thisOutputId = DrvOutput{thisOutputHash, outputName};
             if (!store->queryRealisation(thisOutputId)) {
                 debug("missing output %s", outputName);
                 auto r = sshStore->queryRealisation(thisOutputId);

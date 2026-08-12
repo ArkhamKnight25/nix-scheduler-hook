@@ -32,7 +32,7 @@
         default = nix-scheduler-hook;
         nix-scheduler-hook = pkgs.callPackage ./default.nix {
           restclient-cpp = inputs.restclient-cpp;
-          nix = pkgs.nixVersions.nix_2_35;
+          nix = pkgs.nixVersions.nix_2_34;
         };
       });
       devShells = eachDefaultSystem (pkgs: system: {
@@ -45,9 +45,9 @@
             pkg-config
             boost
             curl
-            nixVersions.nix_2_35.libs.nix-util
-            nixVersions.nix_2_35.libs.nix-store
-            nixVersions.nix_2_35.libs.nix-main
+            nixVersions.nix_2_34.libs.nix-util
+            nixVersions.nix_2_34.libs.nix-store
+            nixVersions.nix_2_34.libs.nix-main
             nlohmann_json
             openpbs
             slurm

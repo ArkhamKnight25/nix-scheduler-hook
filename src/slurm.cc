@@ -172,7 +172,7 @@ static void waitForJobRunning(std::string jobId)
     }
 }
 
-void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures)
+void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures, nix::StorePathSet wantedPaths)
 {
     auto & jobContext = contexts[drvPath];
 
@@ -184,7 +184,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
             {"name", "Nix Build - " + std::string(drvPath.to_string())},
             {"current_working_directory", ourSettings.submitDir.get().string()},
             {"environment", json::parse(ourSettings.submitEnv.get())},
-            {"script", genScript(drvPath, jobContext.rootPath)},
+            {"script", genScript(drvPath, jobContext.rootPath, wantedPaths)},
             {"standard_error", jobContext.jobStderr},
         }}
     };

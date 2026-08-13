@@ -14,7 +14,7 @@
 
 #include <boost/algorithm/string/join.hpp>
 
-inline std::string genScript(nix::StorePath drvPath, std::string rootPath)
+inline std::string genScript(nix::StorePath drvPath, std::string rootPath, nix::StorePathSet wantedPaths)
 {
     auto nixCmdPrefix = ourSettings.remoteNixBinDir.get() != "" ? ourSettings.remoteNixBinDir.get() + "/" : "";
 
@@ -28,14 +28,23 @@ inline std::string genScript(nix::StorePath drvPath, std::string rootPath)
 
     std::string remoteBuildScript =
         "#!/bin/sh\n"
-        "sleep infinity\n";
+        "for path in %4%; do while ! %1%nix-store --store '%2%' --query --hash %3%/$path; do sleep 0.1; done; done\n";
 
     auto submitScript = ourSettings.submitScript.get();
 
     if (ourSettings.remoteBuilding.get()) {
+        nix::StringSet wantedPathStrings;
+        for (auto & path : wantedPaths)
+            wantedPathStrings.insert(std::string(path.to_string()));
         if (submitScript != "")
             remoteBuildScript = nix::readFile(submitScript);
-        return remoteBuildScript;
+        return nix::fmt(
+            remoteBuildScript,
+            nixCmdPrefix,
+            ourSettings.remoteStore.get(),
+            ourSettings.storeDir.get(),
+            boost::algorithm::join(wantedPathStrings, " ")
+        );
     } else {
         if (submitScript != "")
             script = nix::readFile(submitScript);

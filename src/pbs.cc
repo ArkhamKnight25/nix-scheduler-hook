@@ -71,7 +71,7 @@ PBS::PBS()
         throw PBSConnectionError(nix::fmt("Error connecting to PBS server: %d", pbs_errno));
 }
 
-void PBS::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures)
+void PBS::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures, nix::StorePathSet wantedPaths)
 {
     auto & jobContext = contexts[drvPath];
 
@@ -90,7 +90,7 @@ void PBS::submit(nix::StorePath drvPath, std::string system, nix::StringSet requ
     createdScript = true;
     __gnu_cxx::stdio_filebuf<char> scriptOutBuf(fd, std::ios::out);
     std::ostream scriptOut(&scriptOutBuf);
-    scriptOut << genScript(drvPath, jobContext.rootPath);
+    scriptOut << genScript(drvPath, jobContext.rootPath, wantedPaths);
     scriptOut.flush();
 
     // Attribute chain:

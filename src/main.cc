@@ -348,10 +348,16 @@ try {
         wantedOutputs = nix::readStrings<nix::StringSet>(source);
     }
 
+    auto drv = store->readDerivation(drvPath);
+    nix::StorePathSet wantedPaths;
+    for (auto & [name, output] : drv.outputsAndOptPaths(*store)) {
+        wantedPaths.insert(*output.second);
+    }
+
     std::string host;
     try {
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, "submitting build to scheduler");
-        host = scheduler->startBuild(drvPath, neededSystem, requiredFeatures);
+        host = scheduler->startBuild(drvPath, neededSystem, requiredFeatures, wantedPaths);
     } catch (nix::Interrupted &) {
         throw;
     } catch (std::exception & e) {
@@ -589,10 +595,30 @@ try {
 
         if (cmdOutFailed)
             return 1;
+    } else {
+        int rc;
+        try {
+            rc = scheduler->waitForJobFinish(drvPath);
+        } catch (nix::Interrupted &) {
+            throw;
+        } catch (std::exception & e) {
+            using namespace nix;
+            printError("NSH Error: error while waiting for job %s termination: %s", scheduler->getJobId(drvPath), e.what());
+            return 1;
+        }
+        if (rc == -1) {
+            using namespace nix;
+            printError("NSH Error: job %s abnormally terminated.", scheduler->getJobId(drvPath));
+            return 1;
+        } else if (rc) {
+            // Job script failed, so no more work to do
+            using namespace nix;
+            printError("job script failed with exit code %d", rc);
+            return rc;
+        }
     }
 
     using namespace nix;
-    auto drv = store->readDerivation(drvPath);
     auto outputHashes = staticOutputHashes(*store, drv);
     std::set<Realisation> missingRealisations;
     StorePathSet missingPaths;

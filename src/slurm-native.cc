@@ -17,7 +17,7 @@ SlurmNative::SlurmNative()
     slurm_init(ourSettings.slurmConf.get() != "" ? ourSettings.slurmConf.get().c_str() : nullptr);
 }
 
-void SlurmNative::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures)
+void SlurmNative::submit(nix::StorePath drvPath, std::string system, nix::StringSet requiredFeatures, nix::StorePathSet wantedPaths)
 {
     auto & jobContext = contexts[drvPath];
 
@@ -36,7 +36,7 @@ void SlurmNative::submit(nix::StorePath drvPath, std::string system, nix::String
         job_desc_msg.environment[i] = vars[i].data();
     job_desc_msg.env_size = vars.size();
 
-    auto script = genScript(drvPath, jobContext.rootPath);
+    auto script = genScript(drvPath, jobContext.rootPath, wantedPaths);
     job_desc_msg.script = script.data();
 
     auto submitDir = ourSettings.submitDir.get().string();

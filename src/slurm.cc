@@ -250,7 +250,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
         }
     }
 
-    {
+    while (true) {
         SignalBlocker blockTerm;
         RestClient::Response r = getConn(false)->post("/slurm/" + SLURM_API_VERSION + "/job/submit", req.dump());
         if (r.body == "Authentication failure") {
@@ -258,6 +258,10 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
         }
         json response = parseResponse(r);
         if (response["errors"].size() > 0) {
+            if (response["errors"][0]["error_number"] == 11) { // resource temporarily unavailable (e.g. max jobs reached)
+                interruptibleSleep(5s);
+                continue;
+            }
             throw SlurmAPIError(nix::fmt("%s (%d): %s",
                 response["errors"][0]["description"],
                 response["errors"][0]["error_number"],
@@ -267,6 +271,7 @@ void Slurm::submit(nix::StorePath drvPath, std::string system, nix::StringSet re
         jobContext.jobId = std::to_string(jobIdInt);
         jobContext.rootPath = nix::fmt("%s/job-%s-%s.root", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
         jobContext.jobStderr = nix::fmt("%s/job-%s-%s.stderr", ourSettings.slurmStateDir.get(), jobContext.jobId, std::string(drvPath.to_string()));
+        break;
     }
 
     waitForJobRunning(jobContext.jobId);

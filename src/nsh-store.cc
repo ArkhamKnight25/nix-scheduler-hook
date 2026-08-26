@@ -55,6 +55,13 @@ static StoreReference::Params bridgeParamsToSettings(const StoreReference::Param
     ourSettings.getSettings(known, /*overriddenOnly=*/false);
     for (const auto & [nshKey, _] : known)
         filtered.erase(nshKey);
+    /* This store is a veneer: writes delegate straight to the backing store
+     * and bypass this store's own path-info cache. Nix probes a .drv's
+     * validity before writing it, so a negative entry cached here would
+     * report the path invalid forever after the write (breaking e.g. the
+     * whole-graph --store flow at copyClosure). The backing store has its
+     * own cache; keep this one disabled. */
+    filtered.try_emplace("path-info-cache-size", "0");
     return filtered;
 }
 
@@ -72,11 +79,13 @@ std::string NshStoreConfig::doc()
 {
     return
         "This store dispatches builds through an HPC job scheduler "
-        "(Slurm REST, libslurm, or PBS). It is used as a build machine "
-        "store (`nix.buildMachines` with a `nsh://` storeUri), not as a "
-        "top-level `--store`. All nix-scheduler-hook settings (e.g. "
-        "`job-scheduler`, `slurm-state-dir`) are given as URL query "
-        "parameters.";
+        "(Slurm REST, libslurm, or PBS). As a build machine store "
+        "(`nix.buildMachines` with a `nsh://` storeUri) every derivation "
+        "becomes its own scheduler job; as a top-level `--store` the "
+        "requested derivation and its missing dependencies are built "
+        "together in a single job (see \"Whole-Graph Builds\" in the "
+        "README). All nix-scheduler-hook settings (e.g. `job-scheduler`, "
+        "`slurm-state-dir`) are given as URL query parameters.";
 }
 
 ref<Store> NshStoreConfig::openStore() const
@@ -245,6 +254,23 @@ struct LoggerStreambuf : std::streambuf
 BuildResult NshBuilder::buildDerivation(
     const StorePath & drvPath, const BasicDerivation & drv, const StorePathSet & inputs, BuildMode buildMode)
 {
+    /* Build-machine flow (`__build-remote`): the supplied input closure both
+     * gets copied to the node and drives placement; all outputs are built
+     * and copied back. */
+    StringSet allOutputs;
+    for (auto & [name, _] : drv.outputs)
+        allOutputs.insert(name);
+    return buildDerivationImpl(drvPath, drv, inputs, inputs, buildMode, allOutputs);
+}
+
+BuildResult NshBuilder::buildDerivationImpl(
+    const StorePath & drvPath,
+    const BasicDerivation & drv,
+    const StorePathSet & inputs,
+    const StorePathSet & placementInputs,
+    BuildMode buildMode,
+    const StringSet & wantedOutputs)
+{
     if (buildMode != bmNormal)
         throw Unsupported("nix-scheduler-hook only supports normal builds");
 
@@ -260,7 +286,7 @@ BuildResult NshBuilder::buildDerivation(
      * known path up front, so they can't be waited on this way. */
     StorePathSet wantedPaths;
     for (auto & [name, output] : drv.outputsAndOptPaths(backing))
-        if (output.second)
+        if (output.second && wantedOutputs.contains(name))
             wantedPaths.insert(*output.second);
 
     /* 1. Submit to the scheduler, select a node, open an SSH connection. */
@@ -268,9 +294,10 @@ BuildResult NshBuilder::buildDerivation(
     std::string host;
     {
         Activity act(*logger, lvlTalkative, actUnknown, "submitting build to scheduler");
-        /* The inputs drive input-aware placement (candidate-nodes) before
-         * the job is allocated; copying them happens after, in step 2. */
-        host = scheduler->startBuild(drvPath, drv, system, requiredFeatures, wantedPaths, inputs);
+        /* placementInputs drive input-aware placement (candidate-nodes)
+         * before the job is allocated; copying `inputs` happens after, in
+         * step 2. */
+        host = scheduler->startBuild(drvPath, drv, system, requiredFeatures, wantedPaths, placementInputs);
     }
     trace("submitted, host=" + host + " job=" + scheduler->getJobId(drvPath));
 
@@ -392,6 +419,8 @@ BuildResult NshBuilder::buildDerivation(
 
     if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations) && !drv.type().hasKnownOutputPaths()) {
         for (auto & [outputName, _] : drv.outputs) {
+            if (!wantedOutputs.contains(outputName))
+                continue;
             DrvOutput id{drvPath, outputName};
             auto r = nodeStore->queryRealisation(id);
             if (!r)
@@ -406,6 +435,8 @@ BuildResult NshBuilder::buildDerivation(
     } else {
         auto outputPaths = drv.outputsAndOptPaths(backing);
         for (auto & [outputName, hopefullyOutputPath] : outputPaths) {
+            if (!wantedOutputs.contains(outputName))
+                continue;
             assert(hopefullyOutputPath.second);
             if (!backing.isValidPath(*hopefullyOutputPath.second))
                 missingPaths.insert(*hopefullyOutputPath.second);
@@ -421,7 +452,12 @@ BuildResult NshBuilder::buildDerivation(
             for (auto & path : missingPaths)
                 localBacking->locksHeld.insert(backing.printStorePath(path));
         trace("copying outputs back");
-        copyPaths(*nodeStore, backing, missingPaths, NoRepair, NoCheckSigs, NoSubstitute);
+        /* Closure, not just the outputs: in the whole-graph flow an output
+         * can reference intermediate outputs that exist only on the node,
+         * and the backing store refuses to register a path whose references
+         * are missing. In the build-machine flow the references are already
+         * valid locally, so the closure copy degenerates to the same set. */
+        copyClosure(*nodeStore, backing, missingPaths, NoRepair, NoCheckSigs, NoSubstitute);
     }
     for (auto & realisation : caRealisations)
         backing.registerDrvOutput(realisation);
@@ -430,6 +466,30 @@ BuildResult NshBuilder::buildDerivation(
     BuildResult result;
     result.inner = std::move(success);
     return result;
+}
+
+StorePathSet NshBuilder::placementInputsFor(const StorePath & drvPath)
+{
+    StorePathSet paths;
+    try {
+        auto src = srcStore();
+        auto drv = src->readDerivation(drvPath);
+        for (auto & p : drv.inputSrcs)
+            paths.insert(p);
+        for (auto & [inputDrvPath, inputNode] : drv.inputDrvs.map) {
+            auto inputDrv = src->readDerivation(inputDrvPath);
+            for (auto & [name, output] : inputDrv.outputsAndOptPaths(*src))
+                if (output.second && inputNode.value.contains(name))
+                    paths.insert(*output.second);
+        }
+    } catch (std::exception & e) {
+        /* Best-effort: with no usable hint the submit simply falls back to
+         * the scheduler's own placement. */
+        logger->log(
+            lvlTalkative,
+            fmt("cannot derive placement inputs for '%s': %s", nshStore.printStorePath(drvPath), e.what()));
+    }
+    return paths;
 }
 
 std::vector<KeyedBuildResult> NshBuilder::buildPathsWithResults(
@@ -442,9 +502,21 @@ std::vector<KeyedBuildResult> NshBuilder::buildPathsWithResults(
             throw Unsupported("nix-scheduler-hook can only build derivations, not '%s'", req.to_string(nshStore));
         auto drvPath = built->drvPath->getBaseStorePath();
         auto drv = srcStore()->readDerivation(drvPath);
+
+        /* Honor the request's outputs spec: only the requested outputs are
+         * waited on and copied back. */
+        StringSet wantedOutputs;
+        for (auto & [name, _] : drv.outputs)
+            if (built->outputs.contains(name))
+                wantedOutputs.insert(name);
+
+        /* No input closure supplied means the whole-graph flow: score
+         * placement on what is statically known instead of skipping it. */
+        auto placement = inputs.empty() ? placementInputsFor(drvPath) : inputs;
+
         BuildResult res;
         try {
-            res = buildDerivation(drvPath, drv, inputs, buildMode);
+            res = buildDerivationImpl(drvPath, drv, inputs, placement, buildMode, wantedOutputs);
         } catch (BuildError & e) {
             res.inner = static_cast<BuildResult::Failure &>(e);
         }
@@ -455,19 +527,32 @@ std::vector<KeyedBuildResult> NshBuilder::buildPathsWithResults(
 
 void NshBuilder::buildPaths(const std::vector<DerivedPath> & reqs, BuildMode buildMode)
 {
-    for (auto & result : buildPathsWithResults(reqs, StorePathSet{}, buildMode))
+    for (auto & result : buildPathsWithResults(reqs, buildMode))
         result.tryThrowBuildError();
 }
 
 std::vector<KeyedBuildResult>
 NshBuilder::buildPathsWithResults(const std::vector<DerivedPath> & reqs, BuildMode buildMode)
 {
+    /* Whole-graph flow (`--store nsh://`): the node realises each requested
+     * derivation together with its still-missing dependencies inside one
+     * scheduler job. */
+    for (auto & req : reqs)
+        logger->log(
+            lvlInfo,
+            fmt("building '%s' and its missing dependencies as a single scheduler job", req.to_string(nshStore)));
     return buildPathsWithResults(reqs, StorePathSet{}, buildMode);
 }
 
 BuildResult NshBuilder::buildDerivation(const StorePath & drvPath, const BasicDerivation & drv, BuildMode buildMode)
 {
-    return buildDerivation(drvPath, drv, StorePathSet{}, buildMode);
+    logger->log(
+        lvlInfo,
+        fmt("building '%s' and its missing dependencies as a single scheduler job", nshStore.printStorePath(drvPath)));
+    StringSet allOutputs;
+    for (auto & [name, _] : drv.outputs)
+        allOutputs.insert(name);
+    return buildDerivationImpl(drvPath, drv, StorePathSet{}, placementInputsFor(drvPath), buildMode, allOutputs);
 }
 
 void NshBuilder::ensurePath(const StorePath & path)

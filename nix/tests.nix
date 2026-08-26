@@ -1187,6 +1187,56 @@ in
       submit.succeed("sed -i '/job-scheduler/d' /etc/nix/nsh.conf")
       submit.succeed("sed -i '/slurm-conf/d' /etc/nix/nsh.conf")
       submit.succeed("sed -i '/candidate-nodes/d' /etc/nix/nsh.conf")
+
+      # ---- Whole-graph builds (--store nsh://) ------------------------
+      # With nsh:// as the top-level store there is no per-derivation
+      # fan-out: the requested derivation and its still-missing dependency
+      # build inside ONE scheduler job. Only the top output is copied back
+      # to the submit host; the dep output must exist on the executing node
+      # (node1, by scheduler weight) but NOT on the submit host — the
+      # build-machine flow would have copied it back.
+      # The dep is a BUILD-TIME-only dependency (top reads $dep but does not
+      # embed its path in the output), so its output has no reason to be
+      # copied back: it must remain node-only. A runtime reference would be
+      # copied back with the output's closure.
+      def whole_graph_expr(seed, tail):
+          return """
+            let
+              mkDrv = name: text: derivation {
+                inherit name;
+                builder = "/bin/sh";
+                args = ["-c" ("echo " + text + " > $out")];
+                system = builtins.currentSystem;
+                requiredSystemFeatures = ["nsh"];
+                SEED = "%s";
+              };
+              dep = mkDrv "wholegraph-dep" "dep";
+              top = derivation {
+                name = "wholegraph-top";
+                builder = "/bin/sh";
+                args = ["-c" "cat $dep > $out; echo top >> $out"];
+                inherit dep;
+                system = builtins.currentSystem;
+                requiredSystemFeatures = ["nsh"];
+                SEED = "%s";
+              };
+            in %s
+          """ % (seed, seed, tail)
+
+      with subtest("plugin_whole_graph_store_build"):
+          seed = submit.succeed("date +%s%N").strip()
+          top_path = submit.succeed(
+              "nix-build --no-out-link --store nsh:// -E '%s'"
+              % whole_graph_expr(seed, "top")
+          ).strip()
+          dep_drv = submit.succeed(
+              "nix-instantiate -E '%s'" % whole_graph_expr(seed, "dep")
+          ).strip()
+          dep_path = submit.succeed("nix-store --query --outputs %s" % dep_drv).strip()
+          submit.succeed("nix-store --query --hash %s" % top_path)
+          submit.fail("nix-store --query --hash %s" % dep_path)
+          node1.succeed("nix-store --query --hash %s" % top_path)
+          node1.succeed("nix-store --query --hash %s" % dep_path)
     '';
   };
 }

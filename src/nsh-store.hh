@@ -43,6 +43,19 @@ public:
         return {"nsh"};
     }
 
+    /* The base implementation returns StoreReference::Auto, on which nix's
+     * copy-progress messages hit unreachable() — every concrete store must
+     * report a resolved reference. */
+    StoreReference getReference() const override
+    {
+        return {
+            .variant =
+                StoreReference::Specified{
+                    .scheme = *uriSchemes().begin(),
+                },
+        };
+    }
+
     ref<Store> openStore() const override;
 };
 
@@ -123,8 +136,12 @@ struct NshBuilder : public Builder
     std::vector<KeyedBuildResult> buildPathsWithResults(
         const std::vector<DerivedPath> & reqs, const StorePathSet & inputs, BuildMode buildMode) override;
 
-    /* No-inputs overloads: for API completeness (not on the offload path).
-     * They forward to the inputs overloads with an empty input set. */
+    /* No-inputs overloads: the whole-graph flow. When `nsh://` is the
+     * top-level store (`nix build --store nsh://`), nix hands us the goal
+     * directly with no Worker fan-out, so the job script realises the
+     * requested derivation AND its still-missing dependencies on the node —
+     * the entire graph runs as a single scheduler job. See "Whole-Graph
+     * Builds" in the README for the trade-offs. */
     void buildPaths(const std::vector<DerivedPath> & reqs, BuildMode buildMode) override;
     std::vector<KeyedBuildResult>
     buildPathsWithResults(const std::vector<DerivedPath> & reqs, BuildMode buildMode) override;
@@ -134,6 +151,27 @@ struct NshBuilder : public Builder
     void repairPath(const StorePath & path) override;
 
 private:
+    /* Shared implementation. `inputs` are the paths copied to the node
+     * before the build; `placementInputs` are the paths scored for
+     * input-aware node selection (identical to `inputs` in the
+     * build-machine flow, statically derived in the whole-graph flow, where
+     * intermediate outputs may not exist anywhere yet and so must not be
+     * copied); `wantedOutputs` limits which outputs are waited on and
+     * copied back. */
+    BuildResult buildDerivationImpl(
+        const StorePath & drvPath,
+        const BasicDerivation & drv,
+        const StorePathSet & inputs,
+        const StorePathSet & placementInputs,
+        BuildMode buildMode,
+        const StringSet & wantedOutputs);
+
+    /* Statically known store paths a whole-graph build will want on the
+     * node: the derivation's input sources plus the known output paths of
+     * its direct input derivations. Dependencies that exist nowhere yet
+     * simply contribute nothing to any candidate's score. Best-effort. */
+    StorePathSet placementInputsFor(const StorePath & drvPath);
+
     /* Source store for copying inputs/drv closure to the node. */
     ref<Store> srcStore();
     std::shared_ptr<Store> srcStoreCache;

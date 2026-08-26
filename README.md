@@ -33,6 +33,21 @@ The chosen node and per-node scores are logged (`NSH: input-aware scheduling: se
 
 Input-aware placement only applies in plugin mode: the legacy build-hook protocol (see **Installation**) reveals the input list only after the hook has accepted the build, so hook-mode submissions keep the scheduler's normal placement. Both modes remain supported.
 
+## Whole-Graph Builds (`--store nsh://`)
+
+The `nsh://` store can be used in two ways, with different job granularity:
+
+- **As a build machine** (`nix.buildMachines` with a `nsh://` storeUri): nix's own scheduler walks the build graph and dispatches each derivation separately, so every derivation becomes its own scheduler job and independent parts of the graph run in parallel across the cluster. This is the primary mode, and the one input-aware placement was designed around: each derivation is a fresh placement decision.
+- **As the top-level store** (`nix build --store 'nsh://'`): nix hands NSH the requested goal directly, with no per-derivation fan-out. NSH submits **one scheduler job** for the requested derivation and copies its derivation closure to the assigned node; the job realises the derivation there, building any still-missing dependencies inside the same job. Only the requested outputs are copied back to the local store; intermediate outputs remain in the node's store, where later input-aware placement decisions can find them.
+
+Whole-graph mode fits reserving a single node to build a closure end-to-end. Compared to the build-machine flow it trades away:
+
+- Cluster-level parallelism: the graph builds on one node (with that node's local parallelism).
+- Per-derivation gating: only the requested derivation's `system` and `requiredSystemFeatures` shape the job; its dependencies build on the node unvetted, so a dependency needing a different system simply fails inside the job.
+- Failure attribution and log separation: a failing dependency fails the whole job, and the build log is a single stream for the entire graph.
+
+Input-aware placement still works in whole-graph mode, scored on what is statically known: the derivation's input sources and the known output paths of its direct dependencies. A node that already holds parts of the graph from earlier builds wins; dependencies that exist nowhere yet contribute nothing to any score.
+
 ## Supported Job Schedulers
 
 ### Slurm

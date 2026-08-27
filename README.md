@@ -20,34 +20,6 @@ General settings:
 - `candidate-nodes`: Ordered, whitespace-separated list of scheduler node names eligible for input-aware placement (see below). Default: (empty, disabled).
 - `node-store-addresses`: Optional JSON dictionary mapping a scheduler node name from `candidate-nodes` to the host address used to query its Nix store over SSH, for clusters where the scheduler's node name is not a resolvable address, e.g. `{"gpu01": "gpu01.cluster.internal"}`. Nodes not listed use their scheduler name as the address. Default: (empty).
 
-## Input-Aware Placement
-
-When NSH runs as a Nix store plugin (the `nsh://` store), Nix hands it the build's required input closure *before* the job is submitted. If `candidate-nodes` is set, NSH uses this to choose the compute node instead of letting the scheduler place the job blindly:
-
-1. For every node in `candidate-nodes`, NSH connects to the node's Nix store over SSH (`ssh-ng`, reusing `ssh-user`, `ssh-port`, `remote-store` and `remote-nix-bin-dir`) and asks which of the required input paths are already valid there. This happens before job allocation, so every candidate store must be queryable up front; nothing is copied at this stage.
-2. Each node is scored by the number of required input paths it already holds.
-3. The highest-scoring node wins; ties go to the node listed earliest in `candidate-nodes`. The job is then pinned to that node (Slurm REST: `required_nodes`; Slurm native: `job_desc_msg_t.req_nodes`; PBS: `Resource_List.select = 1:host=<node>`), and any inputs it is still missing are copied as usual once the job is allocated.
-4. Fallback: if `candidate-nodes` is empty, the build has no inputs, every candidate scores zero, or every candidate store is unreachable, the job is submitted without a node preference and the scheduler places it normally. A single unreachable candidate is skipped with a warning and never fails the build.
-
-The chosen node and per-node scores are logged (`NSH: input-aware scheduling: selected node ...`). A user-supplied node request in the extra submission parameters (`required_nodes` for Slurm REST, `select`/`nodes`/`host` in `pbsResources` for PBS) conflicts with input-aware placement and is rejected with an error rather than silently merged.
-
-Input-aware placement only applies in plugin mode: the legacy build-hook protocol (see **Installation**) reveals the input list only after the hook has accepted the build, so hook-mode submissions keep the scheduler's normal placement. Both modes remain supported.
-
-## Whole-Graph Builds (`--store nsh://`)
-
-The `nsh://` store can be used in two ways, with different job granularity:
-
-- **As a build machine** (`nix.buildMachines` with a `nsh://` storeUri): nix's own scheduler walks the build graph and dispatches each derivation separately, so every derivation becomes its own scheduler job and independent parts of the graph run in parallel across the cluster. This is the primary mode, and the one input-aware placement was designed around: each derivation is a fresh placement decision.
-- **As the top-level store** (`nix build --store 'nsh://'`): nix hands NSH the requested goal directly, with no per-derivation fan-out. NSH submits **one scheduler job** for the requested derivation and copies its derivation closure to the assigned node; the job realises the derivation there, building any still-missing dependencies inside the same job. Only the requested outputs are copied back to the local store; intermediate outputs remain in the node's store, where later input-aware placement decisions can find them.
-
-Whole-graph mode fits reserving a single node to build a closure end-to-end. Compared to the build-machine flow it trades away:
-
-- Cluster-level parallelism: the graph builds on one node (with that node's local parallelism).
-- Per-derivation gating: only the requested derivation's `system` and `requiredSystemFeatures` shape the job; its dependencies build on the node unvetted, so a dependency needing a different system simply fails inside the job.
-- Failure attribution and log separation: a failing dependency fails the whole job, and the build log is a single stream for the entire graph.
-
-Input-aware placement still works in whole-graph mode, scored on what is statically known: the derivation's input sources and the known output paths of its direct dependencies. A node that already holds parts of the graph from earlier builds wins; dependencies that exist nowhere yet contribute nothing to any score.
-
 ## Supported Job Schedulers
 
 ### Slurm
@@ -140,6 +112,34 @@ echo "Hello PBS!" > $out
 NSH is available in nixpkgs as `nix-scheduler-hook` as of [8ef2f76](https://github.com/NixOS/nixpkgs/commit/8ef2f769e98b2e59ed4affdb42544285626eb605).
 
 Edit your `nix.conf` and set `build-hook = /path/to/nix-scheduler-hook/bin/nsh` (e.g., on non-NixOS, install it like you would any other package and use `/home/you/.nix-profile/bin/nsh` or `/nix/var/nix/profiles/default/bin`). On NixOS, you can do `nix.settings.build-hook = ${pkgs.nix-scheduler-hook}/bin/nsh`.
+
+## Input-Aware Placement
+
+When NSH runs as a Nix store plugin (the `nsh://` store), Nix hands it the build's required input closure *before* the job is submitted. If `candidate-nodes` is set, NSH uses this to choose the compute node instead of letting the scheduler place the job blindly:
+
+1. For every node in `candidate-nodes`, NSH connects to the node's Nix store over SSH (`ssh-ng`, reusing `ssh-user`, `ssh-port`, `remote-store` and `remote-nix-bin-dir`) and asks which of the required input paths are already valid there. This happens before job allocation, so every candidate store must be queryable up front; nothing is copied at this stage.
+2. Each node is scored by the number of required input paths it already holds.
+3. The highest-scoring node wins; ties go to the node listed earliest in `candidate-nodes`. The job is then pinned to that node (Slurm REST: `required_nodes`; Slurm native: `job_desc_msg_t.req_nodes`; PBS: `Resource_List.select = 1:host=<node>`), and any inputs it is still missing are copied as usual once the job is allocated.
+4. Fallback: if `candidate-nodes` is empty, the build has no inputs, every candidate scores zero, or every candidate store is unreachable, the job is submitted without a node preference and the scheduler places it normally. A single unreachable candidate is skipped with a warning and never fails the build.
+
+The chosen node and per-node scores are logged (`NSH: input-aware scheduling: selected node ...`). A user-supplied node request in the extra submission parameters (`required_nodes` for Slurm REST, `select`/`nodes`/`host` in `pbsResources` for PBS) conflicts with input-aware placement and is rejected with an error rather than silently merged.
+
+Input-aware placement only applies in plugin mode: the legacy build-hook protocol (see **Installation**) reveals the input list only after the hook has accepted the build, so hook-mode submissions keep the scheduler's normal placement. Both modes remain supported.
+
+## Whole-Graph Builds (`--store nsh://`)
+
+The `nsh://` store can be used in two ways, with different job granularity:
+
+- **As a build machine** (`nix.buildMachines` with a `nsh://` storeUri): nix's own scheduler walks the build graph and dispatches each derivation separately, so every derivation becomes its own scheduler job and independent parts of the graph run in parallel across the cluster. This is the primary mode, and the one input-aware placement was designed around: each derivation is a fresh placement decision.
+- **As the top-level store** (`nix build --store 'nsh://'`): nix hands NSH the requested goal directly, with no per-derivation fan-out. NSH submits **one scheduler job** for the requested derivation and copies its derivation closure to the assigned node; the job realises the derivation there, building any still-missing dependencies inside the same job. Only the requested outputs are copied back to the local store; intermediate outputs remain in the node's store, where later input-aware placement decisions can find them.
+
+Whole-graph mode fits reserving a single node to build a closure end-to-end. Compared to the build-machine flow it trades away:
+
+- Cluster-level parallelism: the graph builds on one node (with that node's local parallelism).
+- Per-derivation gating: only the requested derivation's `system` and `requiredSystemFeatures` shape the job; its dependencies build on the node unvetted, so a dependency needing a different system simply fails inside the job.
+- Failure attribution and log separation: a failing dependency fails the whole job, and the build log is a single stream for the entire graph.
+
+Input-aware placement still works in whole-graph mode, scored on what is statically known: the derivation's input sources and the known output paths of its direct dependencies. A node that already holds parts of the graph from earlier builds wins; dependencies that exist nowhere yet contribute nothing to any score.
 
 ## Fallback to Normal Build Hook
 

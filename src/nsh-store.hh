@@ -5,7 +5,6 @@
 #include <optional>
 
 #include <nix/store/store-api.hh>
-#include <nix/store/build-store.hh>
 #include <nix/store/build.hh>
 #include <nix/store/store-registration.hh>
 
@@ -63,12 +62,12 @@ public:
  * the configured `Scheduler` and lands the resulting outputs in a backing
  * store (the node-local default store, `openStore()`), whose read/write ops
  * this store delegates to so nix's `__build-remote` can copy outputs back. */
-struct NshStore : public virtual BuildStore
+struct NshStore : public virtual Store
 {
 private:
-    /* VTable anchor: mandatory so `BuildStore`'s subobject typeinfo is a
-     * strong symbol and `dynamic_cast<BuildStore*>` resolves across the .so
-     * boundary (otherwise the store silently falls back to local building). */
+    /* `Store::anchor` is a pure-virtual vtable anchor; defining it here
+     * keeps this store's typeinfo a strong libstore-visible symbol so
+     * cross-.so `dynamic_cast` works. */
     void anchor() override;
 
 public:
@@ -82,7 +81,7 @@ public:
 
     NshStore(ref<const Config>);
 
-    /* BuildStore: hand nix a builder that offloads to the scheduler. */
+    /* Hand nix a builder that offloads to the scheduler. */
     ref<Builder> getBuilder(std::shared_ptr<Store> evalStore = nullptr) override;
 
     /* Read ops: delegate to the backing store. */
@@ -105,7 +104,8 @@ public:
         ContentAddressMethod hashMethod,
         HashAlgorithm hashAlgo,
         const StorePathSet & references,
-        RepairFlag repair) override;
+        RepairFlag repair,
+        std::shared_ptr<const Provenance> provenance) override;
     void registerDrvOutput(const Realisation & output) override;
 
     /* We don't know whether we're trusted; assume we are (like `ssh://`) so
@@ -116,9 +116,9 @@ public:
     }
 };
 
-/* The Phase-2 Builder for `nsh://`. The real work lives in the two `inputs`
- * overloads, which submit to the scheduler, copy inputs to the node, wait,
- * and copy outputs into the backing store. */
+/* The `Builder` for `nsh://`, handed to nix via `NshStore::getBuilder()`.
+ * It submits to the scheduler, copies inputs to the node, waits, and copies
+ * outputs into the backing store. */
 struct NshBuilder : public Builder
 {
     NshStore & nshStore;
@@ -127,25 +127,21 @@ struct NshBuilder : public Builder
 
     NshBuilder(NshStore & nshStore, std::shared_ptr<Store> evalStore);
 
-    /* Phase-2 overloads (the ones exercised by `nix build` offload). */
-    BuildResult buildDerivation(
-        const StorePath & drvPath,
-        const BasicDerivation & drv,
-        const StorePathSet & inputs,
-        BuildMode buildMode) override;
-    std::vector<KeyedBuildResult> buildPathsWithResults(
-        const std::vector<DerivedPath> & reqs, const StorePathSet & inputs, BuildMode buildMode) override;
+    /* Build-machine flow (`__build-remote` with a `nsh://` storeUri): nix
+     * primes `drv.inputSrcs` with the build's input closure before calling
+     * (see build-remote.cc), so those paths are what gets copied to the
+     * node and what drives input-aware placement. */
+    BuildResult buildDerivation(const StorePath & drvPath, const BasicDerivation & drv, BuildMode buildMode) override;
 
-    /* No-inputs overloads: the whole-graph flow. When `nsh://` is the
-     * top-level store (`nix build --store nsh://`), nix hands us the goal
-     * directly with no Worker fan-out, so the job script realises the
-     * requested derivation AND its still-missing dependencies on the node —
-     * the entire graph runs as a single scheduler job. See "Whole-Graph
-     * Builds" in the README for the trade-offs. */
+    /* Whole-graph flow: when `nsh://` is the top-level store (`nix build
+     * --store nsh://`), nix hands us the goal directly with no Worker
+     * fan-out, so the job script realises the requested derivation AND its
+     * still-missing dependencies on the node — the entire graph runs as a
+     * single scheduler job. See "Whole-Graph Builds" in the README for the
+     * trade-offs. */
     void buildPaths(const std::vector<DerivedPath> & reqs, BuildMode buildMode) override;
     std::vector<KeyedBuildResult>
     buildPathsWithResults(const std::vector<DerivedPath> & reqs, BuildMode buildMode) override;
-    BuildResult buildDerivation(const StorePath & drvPath, const BasicDerivation & drv, BuildMode buildMode) override;
 
     void ensurePath(const StorePath & path) override;
     void repairPath(const StorePath & path) override;

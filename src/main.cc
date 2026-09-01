@@ -18,7 +18,7 @@ using namespace std::chrono_literals;
 #include <nix/store/path.hh>
 #include <nix/store/store-open.hh>
 #include <nix/store/build-result.hh>
-#include <nix/store/build-store.hh>
+#include <nix/store/build.hh>
 #include <nix/store/ssh-store.hh>
 #include <nix/store/globals.hh>
 #include <nix/store/pathlocks.hh>
@@ -441,14 +441,11 @@ try {
         if (trusted || drv.type().isCA()) {
             if (!drv.inputDrvs.map.empty())
                 drv.inputSrcs = store->parseStorePathSet(inputs);
-            /* buildDerivation lives on the Builder interface as of the
-             * Phase-2 API; ssh-ng (RemoteStore) is always a BuildStore.
-             * The inputs were already copied above, so use the plain
-             * overload rather than the inputs one. */
-            auto buildStore = std::dynamic_pointer_cast<nix::BuildStore>(sshStore);
-            if (!buildStore)
-                throw nix::Error("store '%s' does not support building", storeUri);
-            optResult = buildStore->getBuilder()->buildDerivation(drvPath, static_cast<const nix::BasicDerivation &>(drv));
+            /* buildDerivation lives on the Builder interface, which every
+             * store hands out via Store::getBuilder(); ssh-ng's builder runs
+             * the build on the remote daemon. The inputs were already copied
+             * above. */
+            optResult = sshStore->getBuilder()->buildDerivation(drvPath, static_cast<const nix::BasicDerivation &>(drv));
             auto & result = *optResult;
             if (auto * failureP = result.tryGetFailure()) {
                 if (nix::settings.keepFailed)

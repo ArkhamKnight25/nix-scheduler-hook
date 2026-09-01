@@ -91,8 +91,9 @@ public:
     /* Submits a derivation for building and establishes an ssh connection to
      * the scheduled host.
      *
-     * `inputs` is the build's required input closure (from the Phase-2
-     * Builder overloads). When candidate-nodes is configured, it drives
+     * `inputs` is the build's required input closure (from `drv.inputSrcs`
+     * in the build-machine flow, statically derived in the whole-graph
+     * flow). When candidate-nodes is configured, it drives
      * input-aware placement: the job is pinned to the candidate whose store
      * already holds the most input paths. Hook mode passes no inputs (the
      * hook protocol only reveals them after the job is accepted), so it
@@ -124,7 +125,7 @@ public:
     }
 
     /* Submits a derivation for building. `drv` is the in-memory derivation
-     * supplied by the Phase-2 Builder overload, so backends read `drv.env`
+     * supplied by the Builder interface, so backends read `drv.env`
      * directly rather than re-opening the store and reading the .drv.
      * `pinnedNode`, when set, is the input-aware placement decision: the
      * backend must request exactly that node from its scheduler (and fail

@@ -1225,10 +1225,16 @@ in
 
       with subtest("plugin_whole_graph_store_build"):
           seed = submit.succeed("date +%s%N").strip()
+          # NSH runs inside this nix-build, so its ssh children's stderr is
+          # our stderr: keep a copy to check it below.
           top_path = submit.succeed(
-              "nix-build --no-out-link --store nsh:// -E '%s'"
+              "nix-build --no-out-link --store nsh:// -E '%s' 2> >(tee /tmp/whole-graph.stderr >&2)"
               % whole_graph_expr(seed, "top")
           ).strip()
+          # Teardown unlinks the job's stderr file on the node; the `tail -F`
+          # streaming it must be stopped first, or it reports the unlink on
+          # our stderr ("'...stderr' has become inaccessible").
+          submit.fail("grep -q 'has become inaccessible' /tmp/whole-graph.stderr")
           dep_drv = submit.succeed(
               "nix-instantiate -E '%s'" % whole_graph_expr(seed, "dep")
           ).strip()

@@ -35,9 +35,9 @@ public:
 
     Scheduler() {}
 
-    /* Shared teardown: remove the job's temporary files on the node and
-     * optionally GC its store. Failures are logged per step so one broken
-     * job/file cannot skip the cleanup of the others. */
+    /* Shared teardown: stop the log tail, remove the job's temporary files
+     * on the node and optionally GC its store. Failures are logged per step
+     * so one broken job/file cannot skip the cleanup of the others. */
     virtual ~Scheduler()
     {
         /* Teardown must not be aborted by a pending interrupt: waits are
@@ -47,6 +47,13 @@ public:
         for (auto & [drvPath, jobContext] : contexts) {
             if (!jobContext.sshMaster)
                 continue;
+            /* Stop the tail *before* unlinking its file. `tail -F` follows
+               the file by name and prints "'...' has become inaccessible"
+               to its stderr as soon as it notices the unlink (immediately
+               with inotify); ssh inherits our stderr, so in plugin mode
+               that lands on the user's terminal. Killed first, the orphaned
+               remote tail just exits on its next write. */
+            stopStderrStream(jobContext);
             for (auto & file : {jobContext.rootPath, jobContext.jobStderr}) {
                 if (file.empty())
                     continue;
@@ -167,7 +174,39 @@ public:
         return std::make_shared<std::istream>(jobContext.cmdOutBuf.get());
     }
 
+    /* Tears down the `tail -F` started by getStderrStream(): closes our end
+     * of its stdout and kills the ssh client. Call once nothing reads the
+     * stream any more (the stream returned by getStderrStream() dangles
+     * afterwards). Idempotent; a no-op if the stream was never started. */
+    void stopStderrStream(nix::StorePath drvPath)
+    {
+        if (auto i = contexts.find(drvPath); i != contexts.end())
+            stopStderrStream(i->second);
+    }
+
 protected:
+    static void stopStderrStream(JobContext & jobContext)
+    {
+        if (!jobContext.cmdOutInit)
+            return;
+        jobContext.cmdOutInit = false;
+        /* The filebuf owns the fd released from cmdConn->out. */
+        jobContext.cmdOutBuf.reset();
+        if (jobContext.cmdConn) {
+            try {
+                /* allowInterrupts=false: this also runs from the destructor
+                   and from unwinding paths where the interrupt flag is set.
+                   Killing the ssh client closes the remote tail's pipes; it
+                   exits on its next write. */
+                jobContext.cmdConn->sshPid.kill(false);
+            } catch (std::exception & e) {
+                using namespace nix;
+                printError("NSH Error: error stopping the build log stream: %s", e.what());
+            }
+            jobContext.cmdConn.reset();
+        }
+    }
+
     std::map<nix::StorePath, JobContext> contexts;
     std::set<nix::StorePath> submitCalled;
 };

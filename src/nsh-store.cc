@@ -378,6 +378,17 @@ BuildResult NshBuilder::buildDerivationImpl(
       }
     });
 
+    /* Every path out of the wait joins the log thread (a joinable
+     * std::thread's destructor calls std::terminate) and then stops the
+     * tail: left running, its ssh would linger until the scheduler is torn
+     * down, and the teardown's unlink of the stderr file would make it
+     * complain on our stderr. */
+    auto finishLogStream = [&]() {
+        cmdAbend = true;
+        cmdOutThread.join();
+        scheduler->stopStderrStream(drvPath);
+    };
+
     /* 4. Wait for the job to finish. */
     trace("waiting for job finish");
     int rc;
@@ -385,8 +396,7 @@ BuildResult NshBuilder::buildDerivationImpl(
         rc = scheduler->waitForJobFinish(drvPath);
         trace("job finished rc=" + std::to_string(rc));
     } catch (std::exception & e) {
-        cmdAbend = true;
-        cmdOutThread.join();
+        finishLogStream();
         throw BuildError(
             BuildResult::Failure::TransientFailure,
             "error while waiting for job %s: %s",
@@ -395,8 +405,7 @@ BuildResult NshBuilder::buildDerivationImpl(
     }
 
     if (rc != 0) {
-        cmdAbend = true;
-        cmdOutThread.join();
+        finishLogStream();
         if (rc == -1)
             throw BuildError(
                 BuildResult::Failure::TransientFailure,
@@ -413,8 +422,7 @@ BuildResult NshBuilder::buildDerivationImpl(
      * completion on the log thread having seen the '@nsh done' sentinel —
      * if the tail stream died (or the sentinel was lost), the thread would
      * otherwise spin forever and this join would hang the whole build. */
-    cmdAbend = true;
-    cmdOutThread.join();
+    finishLogStream();
     trace("log thread joined");
 
     /* 5. Copy the outputs from the node into the backing store and build the

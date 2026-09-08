@@ -514,11 +514,14 @@ try {
 
         /* Join cmdOutThread on every exit path: destroying a joinable
         std::thread calls std::terminate(), which on stack unwinding would
-        kill the process before the scheduler's destructor is reached. */
+        kill the process before the scheduler's destructor is reached. Then
+        stop the tail, so its ssh doesn't linger until teardown (where the
+        unlink of the stderr file would make it complain on our stderr). */
         Finally joinCmdOutThread([&]() {
             cmdAbend = true;
             if (cmdOutThread.joinable())
                 cmdOutThread.join();
+            scheduler->stopStderrStream(drvPath);
         });
 
         int rc;

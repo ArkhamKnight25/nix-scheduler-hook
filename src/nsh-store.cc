@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <fstream>
+#include <map>
 #include <thread>
 #include <ext/stdio_filebuf.h>
 #include <unistd.h>
@@ -227,27 +228,53 @@ ref<Store> NshBuilder::srcStore()
 
 namespace {
 
-/* Forwards each completed line to nix's logger. The builder runs inside a
- * `nix __build-remote` child whose raw stderr is not captured into the parent's
- * build log; logger messages are serialised back to the parent and do arrive. */
-struct LoggerStreambuf : std::streambuf
+/* Publishes each completed line of the node's build log as a build-log
+ * result of `act`, the way DerivationBuildingGoal::flushLine publishes a
+ * local builder's output. Plain `logger->log(lvlInfo, ...)` messages are
+ * not an option: the `nix` CLI runs at lvlNotice on a terminal and its
+ * progress bar drops every message above that level, so the log never
+ * reached the user of `nix build --store nsh://`. Build-log results are
+ * shown regardless of verbosity: as the activity's current line in the
+ * progress bar, or in full with -L. Inside a `nix __build-remote` child
+ * they are serialised to the parent as JSON; the parent replays them on a
+ * mirrored activity and also copies them into the build log for `nix log`. */
+struct BuildLogStreambuf : std::streambuf
 {
+    const Activity & act;
+    /* Activities opened by `@nix {...}` lines in the log. An untrusted
+     * builder may only open file transfers, but the API wants the map. */
+    std::map<ActivityId, Activity> activities;
     std::string line;
+
+    explicit BuildLogStreambuf(const Activity & act)
+        : act(act)
+    {
+    }
+
     int overflow(int c) override
     {
         if (c == traits_type::eof())
             return c;
-        if (c == '\n') {
-            logger->log(lvlInfo, line);
-            line.clear();
-        } else
+        if (c == '\n')
+            flushLine();
+        else
             line += static_cast<char>(c);
         return c;
     }
-    ~LoggerStreambuf() override
+
+    void flushLine()
+    {
+        /* `@nix { "action": "setPhase", ... }` lines become phase results
+         * rather than raw log lines, as they do for a local build. */
+        if (!handleJSONLogMessage(line, act, activities, "the derivation builder", false))
+            act.result(resBuildLogLine, line);
+        line.clear();
+    }
+
+    ~BuildLogStreambuf() override
     {
         if (!line.empty())
-            logger->log(lvlInfo, line);
+            flushLine();
     }
 };
 
@@ -309,8 +336,17 @@ BuildResult NshBuilder::buildDerivationImpl(
     else
         storeUri = fmt("ssh-ng://%s:%d", host, ourSettings.sshPort.get());
 
-    Activity startedJobAct(
-        *logger, lvlInfo, actUnknown, fmt("started job %s on %s", scheduler->getJobId(drvPath), host));
+    /* The build's activity, alive until the outputs are back. The progress
+     * bar renders it from the fields as "building <name> on <host> (job
+     * <id>)" and shows the latest log line under it; the log thread in
+     * step 3 publishes the node's build log as its results. */
+    auto jobId = scheduler->getJobId(drvPath);
+    Activity buildAct(
+        *logger,
+        lvlInfo,
+        actBuild,
+        fmt("building '%s' on '%s' (job %s)", nshStore.printStorePath(drvPath), host, jobId),
+        Logger::Fields{nshStore.printStorePath(drvPath), fmt("%s (job %s)", host, jobId), 1, 1});
 
     std::shared_ptr<Store> nodeStore;
     {
@@ -348,7 +384,7 @@ BuildResult NshBuilder::buildDerivationImpl(
         trace("log thread: attaching stderr stream");
         auto cmdOutIs = scheduler->getStderrStream(drvPath);
         trace("log thread: stream attached");
-        LoggerStreambuf logBuf;
+        BuildLogStreambuf logBuf(buildAct);
         std::ostream logOs(&logBuf);
 
         bool gotTerminator = false;

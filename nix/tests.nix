@@ -1214,7 +1214,7 @@ in
               top = derivation {
                 name = "wholegraph-top";
                 builder = "/bin/sh";
-                args = ["-c" "cat $dep > $out; echo top >> $out"];
+                args = ["-c" "echo wholegraph-log-marker-$SEED >&2; cat $dep > $out; echo top >> $out"];
                 inherit dep;
                 system = builtins.currentSystem;
                 requiredSystemFeatures = ["nsh"];
@@ -1243,6 +1243,22 @@ in
           submit.fail("nix-store --query --hash %s" % dep_path)
           node1.succeed("nix-store --query --hash %s" % top_path)
           node1.succeed("nix-store --query --hash %s" % dep_path)
+
+      # The node's build log must reach the client. `nix build` runs at
+      # lvlNotice on a terminal (--quiet reproduces that here, since the
+      # test's stderr is not a tty) and its progress bar drops plain log
+      # messages above that level, so the log has to arrive as build-log
+      # results on a build activity; -L prints those regardless of
+      # verbosity, prefixed with the derivation name.
+      with subtest("plugin_whole_graph_log_streaming"):
+          seed = submit.succeed("date +%s%N").strip()
+          out = submit.succeed(
+              "nix build --extra-experimental-features nix-command --impure --no-link "
+              "--print-build-logs --quiet --store nsh:// --expr '%s' 2>&1"
+              % whole_graph_expr(seed, "top")
+          )
+          print(out)
+          t.assertIn("wholegraph-top> wholegraph-log-marker-%s" % seed, out)
     '';
   };
 }

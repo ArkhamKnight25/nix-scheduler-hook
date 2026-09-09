@@ -153,14 +153,22 @@ private:
      * build-machine flow, statically derived in the whole-graph flow, where
      * intermediate outputs may not exist anywhere yet and so must not be
      * copied); `wantedOutputs` limits which outputs are waited on and
-     * copied back. */
+     * copied back.
+     *
+     * `remoteBuilding` makes the job a bare reservation and has us drive
+     * the build over ssh-ng, so the derivation closure is not copied.
+     * `inputs` must then cover everything the node's daemon needs, since
+     * it gets the derivation inline. True of the build-machine flow, where
+     * nix primes `drv.inputSrcs`; not of the whole-graph flow, which
+     * passes an empty `inputs` and so always passes false. */
     BuildResult buildDerivationImpl(
         const StorePath & drvPath,
         const BasicDerivation & drv,
         const StorePathSet & inputs,
         const StorePathSet & placementInputs,
         BuildMode buildMode,
-        const StringSet & wantedOutputs);
+        const StringSet & wantedOutputs,
+        bool remoteBuilding);
 
     /* Statically known store paths a whole-graph build will want on the
      * node: the derivation's input sources plus the known output paths of

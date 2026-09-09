@@ -289,7 +289,8 @@ BuildResult NshBuilder::buildDerivation(const StorePath & drvPath, const BasicDe
     StringSet allOutputs;
     for (auto & [name, _] : drv.outputs)
         allOutputs.insert(name);
-    return buildDerivationImpl(drvPath, drv, drv.inputSrcs, drv.inputSrcs, buildMode, allOutputs);
+    return buildDerivationImpl(
+        drvPath, drv, drv.inputSrcs, drv.inputSrcs, buildMode, allOutputs, ourSettings.remoteBuilding.get());
 }
 
 BuildResult NshBuilder::buildDerivationImpl(
@@ -298,7 +299,8 @@ BuildResult NshBuilder::buildDerivationImpl(
     const StorePathSet & inputs,
     const StorePathSet & placementInputs,
     BuildMode buildMode,
-    const StringSet & wantedOutputs)
+    const StringSet & wantedOutputs,
+    bool remoteBuilding)
 {
     if (buildMode != bmNormal)
         throw Unsupported("nix-scheduler-hook only supports normal builds");
@@ -327,8 +329,7 @@ BuildResult NshBuilder::buildDerivationImpl(
          * before the job is allocated; copying `inputs` happens after, in
          * step 2. */
         host = scheduler->startBuild(
-            drvPath, drv, system, requiredFeatures, wantedPaths, placementInputs,
-            ourSettings.remoteBuilding.get());
+            drvPath, drv, system, requiredFeatures, wantedPaths, placementInputs, remoteBuilding);
     }
     trace("submitted, host=" + host + " job=" + scheduler->getJobId(drvPath));
 
@@ -372,13 +373,69 @@ BuildResult NshBuilder::buildDerivationImpl(
          * direct inputs, whose references must still reach the node. */
         copyClosure(*src, *nodeStore, inputs, NoRepair, NoCheckSigs, substitute);
         trace("inputs copied");
-        copyClosure(*src, *nodeStore, StorePathSet{drvPath}, NoRepair, NoCheckSigs, substitute);
-        trace("drv closure copied");
+        /* The node's daemon gets the derivation inline over ssh-ng and
+         * never reads a .drv from its own store, so the transitive .drv
+         * graph does not have to be copied. */
+        if (!remoteBuilding) {
+            copyClosure(*src, *nodeStore, StorePathSet{drvPath}, NoRepair, NoCheckSigs, substitute);
+            trace("drv closure copied");
+        } else
+            trace("drv closure copy skipped (remote-building)");
     }
 
-    /* 3. Stream the node's build log to the invoking build via the logger. */
+    /* 2b. The reservation script only polls for the outputs, so drive the
+     * build ourselves. This has to precede waitForJobFinish (the
+     * reservation exits once the outputs are valid, so building after it
+     * deadlocks) and the log thread (both throws below would otherwise
+     * leave it joinable). */
+    if (remoteBuilding) {
+        /* An untrusted client may only submit content-addressed
+         * derivations. There is no trustless fallback here as there is in
+         * `__build-remote`: the reservation is already running and its
+         * script cannot build anything.
+         *
+         * An unknown answer counts as trusted, matching build-remote.cc's
+         * `trustedOrLegacy` at :326-332. isTrustedClient() is nullopt
+         * against a daemon below worker protocol 1.35
+         * (worker-protocol.cc:460-465), and refusing those would reject
+         * builds nix itself accepts. */
+        auto trusted = nodeStore->isTrustedClient();
+        bool trustedOrLegacy = !trusted || *trusted;
+        if (!trustedOrLegacy && !drv.type().isCA())
+            throw BuildError(
+                BuildResult::Failure::PermanentFailure,
+                "cannot build '%s' on '%s' with remote-building: we are not a trusted client there. "
+                "Add the SSH user to the remote's trusted-users, or use a content-addressed derivation.",
+                nshStore.printStorePath(drvPath),
+                storeUri);
+
+        trace("remote-building: building over ssh-ng");
+        Activity act(
+            *logger, lvlTalkative, actUnknown, fmt("building '%s' on '%s'", nshStore.printStorePath(drvPath), host));
+        auto result = nodeStore->getBuilder()->buildDerivation(drvPath, drv, buildMode);
+        if (auto * failureP = result.tryGetFailure())
+            throw BuildError(
+                failureP->status,
+                "build of '%s' on '%s' failed: %s",
+                nshStore.printStorePath(drvPath),
+                storeUri,
+                failureP->message());
+        trace("remote-building: build finished");
+
+        /* The reservation script has no `--add-root`, so nothing protects
+         * these on the node until the copy-back below. */
+        for (auto & [name, output] : drv.outputsAndOptPaths(nshStore))
+            if (output.second && wantedOutputs.contains(name))
+                nodeStore->addTempRoot(*output.second);
+    }
+
+    /* 3. Stream the node's build log to the invoking build via the logger.
+     * The reservation script emits none: that log arrived over ssh-ng
+     * above. Still spawned so the join structure below is unchanged. */
     std::atomic<bool> cmdAbend = false;
     std::thread cmdOutThread([&]() {
+      if (remoteBuilding)
+          return;
       /* handleOutput can throw (log size limit); an exception escaping a
        * thread body calls std::terminate and kills __build-remote with no
        * diagnostics. Contain it: log streaming is best-effort. */
@@ -443,17 +500,29 @@ BuildResult NshBuilder::buildDerivationImpl(
     }
 
     if (rc != 0) {
-        finishLogStream();
-        if (rc == -1)
+        /* The build already succeeded above; the job was only holding the
+         * allocation. Slurm reports a preempted reservation as -1 and PBS
+         * as a nonzero exit, so trusting this would discard a finished
+         * build. The copy-back below decides. */
+        if (remoteBuilding) {
+            warn(
+                "reservation job %s for '%s' exited with %d; the build itself succeeded, continuing",
+                scheduler->getJobId(drvPath),
+                nshStore.printStorePath(drvPath),
+                rc);
+        } else {
+            finishLogStream();
+            if (rc == -1)
+                throw BuildError(
+                    BuildResult::Failure::TransientFailure,
+                    "job %s abnormally terminated",
+                    scheduler->getJobId(drvPath));
             throw BuildError(
-                BuildResult::Failure::TransientFailure,
-                "job %s abnormally terminated",
-                scheduler->getJobId(drvPath));
-        throw BuildError(
-            BuildResult::Failure::PermanentFailure,
-            "builder for '%s' failed with exit code %d",
-            nshStore.printStorePath(drvPath),
-            rc);
+                BuildResult::Failure::PermanentFailure,
+                "builder for '%s' failed with exit code %d",
+                nshStore.printStorePath(drvPath),
+                rc);
+        }
     }
 
     /* The job's exit code from the scheduler is authoritative; don't gate
@@ -571,11 +640,16 @@ NshBuilder::buildPathsWithResults(const std::vector<DerivedPath> & reqs, BuildMo
 
         /* No input closure is copied to the node (intermediate outputs may
          * not exist anywhere yet); placement is scored on what is
-         * statically known. */
+         * statically known.
+         *
+         * `remoteBuilding` is false rather than the setting: with no input
+         * closure there is nothing to hand the node's daemon, so the job
+         * script has to realise the graph from the .drv closure copied at
+         * step 2. */
         BuildResult res;
         try {
             res = buildDerivationImpl(
-                drvPath, drv, StorePathSet{}, placementInputsFor(drvPath), buildMode, wantedOutputs);
+                drvPath, drv, StorePathSet{}, placementInputsFor(drvPath), buildMode, wantedOutputs, false);
         } catch (BuildError & e) {
             res.inner = static_cast<BuildResult::Failure &>(e);
         }

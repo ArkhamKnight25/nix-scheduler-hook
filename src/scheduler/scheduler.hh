@@ -31,6 +31,10 @@ public:
         std::string rootPath;
         bool cmdOutInit = false;
         std::shared_ptr<__gnu_cxx::stdio_filebuf<char>> cmdOutBuf;
+        /* Whether the job script is a bare reservation rather than the
+         * builder. Set per caller, since only the caller knows whether
+         * anything will build over ssh-ng. */
+        bool remoteBuilding = false;
     };
 
     Scheduler() {}
@@ -105,6 +109,10 @@ public:
      * already holds the most input paths. Hook mode passes no inputs (the
      * hook protocol only reveals them after the job is accepted), so it
      * keeps the scheduler's normal placement.
+     *
+     * `remoteBuilding` selects the reservation script over the realising
+     * one. No default: a call site that forgets it should not silently
+     * fall back to the global.
      * @return Address of the node assigned to the job. */
     std::string startBuild(
         nix::StorePath drvPath,
@@ -112,10 +120,13 @@ public:
         std::string system,
         nix::StringSet requiredFeatures,
         nix::StorePathSet wantedPaths,
-        const nix::StorePathSet & inputs = {})
+        const nix::StorePathSet & inputs,
+        bool remoteBuilding)
     {
         contexts[drvPath] = JobContext();
         auto & jobContext = contexts[drvPath];
+        /* Before submit(), which reaches genScript(). */
+        jobContext.remoteBuilding = remoteBuilding;
         auto pinnedNode = selectNodeForInputs(inputs);
         submit(drvPath, drv, system, requiredFeatures, wantedPaths, pinnedNode);
         if (ourSettings.sshUser.get() != "")

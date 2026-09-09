@@ -197,7 +197,7 @@ void Slurm::submit(
             {"name", "Nix Build - " + std::string(drvPath.to_string())},
             {"current_working_directory", ourSettings.submitDir.get().string()},
             {"environment", json::parse(ourSettings.submitEnv.get())},
-            {"script", genScript(drvPath, jobContext.rootPath, wantedPaths)},
+            {"script", genScript(drvPath, jobContext.rootPath, wantedPaths, jobContext.remoteBuilding)},
             {"standard_error", jobContext.jobStderr},
         }}
     };

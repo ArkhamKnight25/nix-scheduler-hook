@@ -129,7 +129,7 @@ void PBS::submit(
     createdScript = true;
     __gnu_cxx::stdio_filebuf<char> scriptOutBuf(fd, std::ios::out);
     std::ostream scriptOut(&scriptOutBuf);
-    scriptOut << genScript(drvPath, jobContext.rootPath, wantedPaths);
+    scriptOut << genScript(drvPath, jobContext.rootPath, wantedPaths, jobContext.remoteBuilding);
     scriptOut.flush();
 
     // Attribute chain:

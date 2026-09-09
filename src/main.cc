@@ -312,7 +312,10 @@ try {
     std::string host;
     try {
         nix::Activity act(*nix::logger, nix::lvlTalkative, nix::actUnknown, "submitting build to scheduler");
-        host = scheduler->startBuild(drvPath, drv, neededSystem, requiredFeatures, wantedPaths);
+        /* No inputs: the hook protocol only reveals them after the job is
+         * accepted, so placement keeps the scheduler's default. */
+        host = scheduler->startBuild(
+            drvPath, drv, neededSystem, requiredFeatures, wantedPaths, {}, ourSettings.remoteBuilding.get());
     } catch (nix::Interrupted &) {
         throw;
     } catch (std::exception & e) {

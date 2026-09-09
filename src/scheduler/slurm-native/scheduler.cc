@@ -68,7 +68,7 @@ void SlurmNative::submit(
         job_desc_msg.environment[i] = vars[i].data();
     job_desc_msg.env_size = vars.size();
 
-    auto script = genScript(drvPath, jobContext.rootPath, wantedPaths);
+    auto script = genScript(drvPath, jobContext.rootPath, wantedPaths, jobContext.remoteBuilding);
     job_desc_msg.script = script.data();
 
     auto submitDir = ourSettings.submitDir.get().string();

@@ -326,7 +326,9 @@ BuildResult NshBuilder::buildDerivationImpl(
         /* placementInputs drive input-aware placement (candidate-nodes)
          * before the job is allocated; copying `inputs` happens after, in
          * step 2. */
-        host = scheduler->startBuild(drvPath, drv, system, requiredFeatures, wantedPaths, placementInputs);
+        host = scheduler->startBuild(
+            drvPath, drv, system, requiredFeatures, wantedPaths, placementInputs,
+            ourSettings.remoteBuilding.get());
     }
     trace("submitted, host=" + host + " job=" + scheduler->getJobId(drvPath));
 

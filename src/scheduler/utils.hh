@@ -30,7 +30,11 @@ inline void promoteLibraryToGlobalScope(const char * soname)
         dlopen(soname, RTLD_NOW | RTLD_GLOBAL);
 }
 
-inline std::string genScript(nix::StorePath drvPath, std::string rootPath, nix::StorePathSet wantedPaths)
+/* `remoteBuilding` comes from the caller. This served all three flows off
+ * the global setting, which gave the whole-graph `nsh://` path a
+ * reservation script nothing satisfied. */
+inline std::string genScript(
+    nix::StorePath drvPath, std::string rootPath, nix::StorePathSet wantedPaths, bool remoteBuilding)
 {
     auto nixCmdPrefix = ourSettings.remoteNixBinDir.get() != "" ? ourSettings.remoteNixBinDir.get() + "/" : "";
 
@@ -48,7 +52,7 @@ inline std::string genScript(nix::StorePath drvPath, std::string rootPath, nix::
 
     auto submitScript = ourSettings.submitScript.get();
 
-    if (ourSettings.remoteBuilding.get()) {
+    if (remoteBuilding) {
         nix::StringSet wantedPathStrings;
         for (auto & path : wantedPaths)
             wantedPathStrings.insert(std::string(path.to_string()));

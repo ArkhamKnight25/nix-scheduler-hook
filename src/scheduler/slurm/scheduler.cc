@@ -383,26 +383,54 @@ int Slurm::waitForJobFinish(nix::StorePath drvPath)
 Slurm::~Slurm()
 {
     for (auto & [drvPath, jobContext] : contexts) {
+        if (jobContext.jobId == "")
+            continue;
+
+        /* Liveness is a hint, not a gate. `getJobState` -> `apiGet` opens
+           with `nix::checkInterrupt()`, so on a Ctrl-C teardown it throws
+           before issuing any request. Gating the cancel on it would then
+           deterministically leak the allocation in exactly the case where
+           releasing it matters most. Unknown state means cancel anyway. */
+        bool live = true, stateKnown = false;
         try {
-            if (jobContext.jobId != "" &&  isLive(getJobState(jobContext.jobId))) {
-                /* Bounded retry: teardown must never spin forever on an
-                   unreachable slurmrestd. Hook mode has nix's SIGKILL as a
-                   backstop, but in plugin mode a wedged teardown would hang
-                   the whole nix process. */
-                auto deadline = std::chrono::steady_clock::now() + 1min;
-                auto sleepTime = 50ms;
-                while (true) {
-                    auto resp = getConn(false)->del("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
-                    if (resp.code == 200)
-                        break;
-                    if (std::chrono::steady_clock::now() >= deadline) {
-                        using namespace nix;
-                        printError("NSH Error: failed to cancel job %s within one minute, giving up", jobContext.jobId);
-                        break;
-                    }
-                    std::this_thread::sleep_for(sleepTime);
-                    if (sleepTime < 400ms) sleepTime *= 2;
+            live = isLive(getJobState(jobContext.jobId));
+            stateKnown = true;
+        } catch (std::exception & e) {
+            using namespace nix;
+            printError(
+                "NSH Error: could not query state of job %s during teardown, cancelling anyway: %s",
+                jobContext.jobId,
+                e.what());
+        }
+        if (stateKnown && !live)
+            continue;
+
+        try {
+            if (!stateKnown) {
+                /* One best-effort attempt. With the state unknown we may be
+                   cancelling an already-finished job, and the bounded retry
+                   below could stall a teardown that is already unwinding
+                   under an interrupt. */
+                getConn(false)->del("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
+                continue;
+            }
+            /* Bounded retry: teardown must never spin forever on an
+               unreachable slurmrestd. Hook mode has nix's SIGKILL as a
+               backstop, but in plugin mode a wedged teardown would hang
+               the whole nix process. */
+            auto deadline = std::chrono::steady_clock::now() + 1min;
+            auto sleepTime = 50ms;
+            while (true) {
+                auto resp = getConn(false)->del("/slurm/" + SLURM_API_VERSION + "/job/" + jobContext.jobId);
+                if (resp.code == 200)
+                    break;
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    using namespace nix;
+                    printError("NSH Error: failed to cancel job %s within one minute, giving up", jobContext.jobId);
+                    break;
                 }
+                std::this_thread::sleep_for(sleepTime);
+                if (sleepTime < 400ms) sleepTime *= 2;
             }
         } catch (std::exception & e) {
             using namespace nix;

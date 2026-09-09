@@ -198,13 +198,40 @@ SlurmNative::~SlurmNative()
 {
     for (auto & [drvPath, nativeJobId] : nativeJobIds) {
         /* An exception escaping a destructor calls std::terminate(); one
-           failed query must not abort teardown of the remaining jobs. */
+           failed query must not abort teardown of the remaining jobs.
+
+           Liveness is a hint, not a gate: getJobState throws whenever
+           slurm_load_job_state fails, which is exactly the unreachable-
+           controller case, and gating the kill on it would leak the
+           allocation precisely when we cannot confirm it is gone. Unknown
+           state means kill anyway; killing an already-finished job is
+           harmless. */
+        bool live = true, stateKnown = false;
         try {
-            if (isLive(getJobState(nativeJobId))) {
-                if (slurm_kill_job(nativeJobId, SIGTERM, 0) && isLive(getJobState(nativeJobId))) {
-                    using namespace nix;
-                    printError("error killing job %" PRIu32 ": %s", nativeJobId.job_id, slurm_strerror(errno));
+            live = isLive(getJobState(nativeJobId));
+            stateKnown = true;
+        } catch (std::exception & e) {
+            using namespace nix;
+            printError(
+                "NSH Error: could not query state of job %" PRIu32 " during teardown, killing anyway: %s",
+                nativeJobId.job_id,
+                e.what());
+        }
+        if (stateKnown && !live)
+            continue;
+
+        try {
+            if (slurm_kill_job(nativeJobId, SIGTERM, 0)) {
+                using namespace nix;
+                /* Only re-query to decide whether the failure was real; if
+                   that query also fails we have already reported it. */
+                bool stillLive = true;
+                try {
+                    stillLive = isLive(getJobState(nativeJobId));
+                } catch (std::exception &) {
                 }
+                if (stillLive)
+                    printError("error killing job %" PRIu32 ": %s", nativeJobId.job_id, slurm_strerror(errno));
             }
         } catch (std::exception & e) {
             using namespace nix;

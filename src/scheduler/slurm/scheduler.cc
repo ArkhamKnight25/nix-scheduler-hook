@@ -74,7 +74,14 @@ static json parseResponse(const RestClient::Response & r)
 static json apiGet(const std::string & path)
 {
     nix::checkInterrupt();
-    auto r = getConn()->get(path);
+    RestClient::Response r;
+    for (int i = 0; i < 3; ++i) {
+        r = getConn()->get(path);
+        if (r.code == 200)
+            break;
+        else
+            interruptibleSleep(100ms);
+    }
     nix::checkInterrupt();
     return parseResponse(r);
 }

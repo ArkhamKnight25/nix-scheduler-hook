@@ -1357,6 +1357,63 @@ in
           node1.succeed("nix-store --query --hash %s" % top_path)
 
       submit.succeed("sed -i '/remote-building/d' /etc/nix/nsh.conf")
+
+      # ---- concurrency -------------------------------------------------
+      # Everything above runs with maxJobs=1 in /etc/nix/machines, so no two
+      # offloads have ever been in flight at once.
+      #
+      # `max-jobs` does not bound them: an offloaded build is started with
+      # `inBuildSlot=false` and so occupies no local build slot (nix's
+      # derivation-building-goal.cc, and the comment on Worker::nrLocalBuilds).
+      # The machines-file field is the only limit, and nix enforces it with
+      # lock files under <state-dir>/current-load that every process on the
+      # host shares.
+      #
+      # Three compute nodes with CPUs=1 apiece means three jobs genuinely can
+      # run at once, so Slurm is the witness: two jobs RUNNING at the same
+      # instant can only happen if nix had two offloads in flight. A serial
+      # regression never satisfies that and fails on the timeout rather than
+      # passing quietly.
+      # /etc/nix/machines is a store symlink and cannot be rewritten, so the
+      # raised slot count is passed on the command line instead; --builders
+      # takes the same fields and overrides the configured list.
+      concurrent_builders = "nsh:// ${guestSystem} - 3 1 nsh nsh"
+
+      concurrent_expr = """
+        let
+          mkDrv = name: derivation {
+            inherit name;
+            builder = "/bin/sh";
+            args = ["-c" "sleep 30; echo $name > $out"];
+            system = builtins.currentSystem;
+            requiredSystemFeatures = ["nsh"];
+            SEED = "SEEDVALUE";
+          };
+        in [ (mkDrv "concurrent-a") (mkDrv "concurrent-b") (mkDrv "concurrent-c") ]
+      """
+
+      with subtest("plugin_concurrent_builds"):
+          seed = submit.succeed("date +%s%N").strip()
+          expr = concurrent_expr.replace("SEEDVALUE", seed)
+          # Via a file: the expression contains double quotes, which would
+          # not survive being nested inside `sh -c` below.
+          submit.succeed("cat > /tmp/concurrent.nix <<'NIXEOF'\n%s\nNIXEOF" % expr)
+          # Backgrounded so squeue can be polled while the build runs; the
+          # exit status lands in a file because nothing waits on the job.
+          submit.succeed(
+              "rm -f /tmp/concurrent.rc /tmp/concurrent.log; "
+              "nohup sh -c 'nix-build --no-out-link "
+              "--builders \"%s\" /tmp/concurrent.nix "
+              "> /tmp/concurrent.log 2>&1; echo $? > /tmp/concurrent.rc' "
+              ">/dev/null 2>&1 &" % concurrent_builders
+          )
+          submit.wait_until_succeeds(
+              "test $(squeue -h -t RUNNING | wc -l) -ge 2", timeout=300
+          )
+          submit.wait_until_succeeds("test -f /tmp/concurrent.rc", timeout=600)
+          print(submit.succeed("cat /tmp/concurrent.log"))
+          t.assertEqual("0", submit.succeed("cat /tmp/concurrent.rc").strip())
+
     '';
   };
 }

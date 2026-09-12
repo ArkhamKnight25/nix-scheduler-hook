@@ -955,6 +955,11 @@ in
             users.users.root.openssh.authorizedKeys.keys = [
               snakeOilPublicKey
             ];
+            # Under `remote-building` the node's own daemon runs the build,
+            # so it has to advertise the features the derivations ask for;
+            # the job script's `--option system-features` is not in play on
+            # that path.
+            nix.settings.system-features = [ "nsh" ];
           };
       in
       {
@@ -1259,6 +1264,99 @@ in
           )
           print(out)
           t.assertIn("wholegraph-top> wholegraph-log-marker-%s" % seed, out)
+
+      # ---- remote-building ---------------------------------------------
+      # With `remote-building` the scheduler job is only a reservation: it
+      # polls for the outputs and exits, while NSH drives the build itself
+      # against the node's daemon over ssh-ng. The derivation goes over the
+      # wire inline, so the node never needs the .drv closure copied to it.
+      #
+      # `dep` is a build-time-only dependency, so `top.drv` has it in
+      # `inputDrvs` and therefore in its closure: `dep.drv` present on the
+      # node means the closure was copied, absent means it was not. The two
+      # subtests below are a matched pair -- the negative assertion in the
+      # first would pass vacuously if the build never reached the node, so
+      # the control proves the probe actually discriminates.
+      def remote_building_expr(seed, tail):
+          return """
+            let
+              dep = derivation {
+                name = "remotebuild-dep";
+                builder = "/bin/sh";
+                args = ["-c" "echo dep > $out"];
+                system = builtins.currentSystem;
+                requiredSystemFeatures = ["nsh"];
+                SEED = "%s";
+              };
+              top = derivation {
+                name = "remotebuild-top";
+                builder = "/bin/sh";
+                args = ["-c" "cat $dep > $out; echo top >> $out"];
+                inherit dep;
+                system = builtins.currentSystem;
+                requiredSystemFeatures = ["nsh"];
+                SEED = "%s";
+              };
+            in %s
+          """ % (seed, seed, tail)
+
+      def build_and_probe(seed):
+          """Build `top` through the build-machine flow and return
+          (top output path, dep .drv path). The build log goes to a file
+          rather than the pipe so the output path stays parseable, and is
+          printed either way -- it is the only view of what the node did."""
+          status, top_path = submit.execute(
+              "nix-build --no-out-link -E '%s' 2>/tmp/remote-building.log"
+              % remote_building_expr(seed, "top")
+          )
+          print(submit.succeed("cat /tmp/remote-building.log"))
+          if status != 0:
+              raise Exception("building remotebuild-top failed (exit %d)" % status)
+          dep_drv = submit.succeed(
+              "nix-instantiate -E '%s'" % remote_building_expr(seed, "dep")
+          ).strip()
+          return top_path.strip(), dep_drv
+
+      with subtest("plugin_remote_building_control_copies_drv_closure"):
+          # remote-building OFF: the job script realises the derivation on
+          # the node, so the node must have the .drv closure to realise.
+          seed = submit.succeed("date +%s%N").strip()
+          top_path, dep_drv = build_and_probe(seed)
+          submit.succeed("nix-store --query --hash %s" % top_path)
+          node1.succeed("nix-store --query --hash %s" % dep_drv)
+
+      submit.succeed("echo 'remote-building = true' >> /etc/nix/nsh.conf")
+
+      with subtest("plugin_remote_building_skips_drv_closure"):
+          # remote-building ON: the derivation is delivered inline over
+          # ssh-ng, so the .drv closure is never copied -- while the build
+          # still succeeds and its output still comes back.
+          seed = submit.succeed("date +%s%N").strip()
+          top_path, dep_drv = build_and_probe(seed)
+          submit.succeed("nix-store --query --hash %s" % top_path)
+          submit.succeed("grep -q top %s" % top_path)
+          node1.fail("nix-store --query --hash %s" % dep_drv)
+
+      with subtest("plugin_remote_building_whole_graph_still_builds"):
+          # Regression test for the deadlock this feature had with nsh://
+          # as the top-level store. `genScript` used to read the setting
+          # from the process-global config regardless of caller, so the
+          # whole-graph flow got a reservation script that polled for
+          # outputs nothing would ever produce, while NshBuilder waited for
+          # that script to do the building. Neither side moved.
+          #
+          # The whole-graph flow has no input closure to hand the node's
+          # daemon, so it must keep the realising script whatever the
+          # setting says. Timed so a regression fails rather than hangs.
+          seed = submit.succeed("date +%s%N").strip()
+          top_path = submit.succeed(
+              "timeout 900 nix-build --no-out-link --store nsh:// -E '%s'"
+              % whole_graph_expr(seed, "top"),
+              timeout=960,
+          ).strip()
+          node1.succeed("nix-store --query --hash %s" % top_path)
+
+      submit.succeed("sed -i '/remote-building/d' /etc/nix/nsh.conf")
     '';
   };
 }
